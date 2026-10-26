@@ -1,7 +1,7 @@
 # J.A.R.V.I.S.
 
-A browser voice assistant with an Iron Man holographic interface. Say
-**"Hey Jarvis"**, he wakes, listens, and does real things through your tools —
+A browser voice assistant with an Iron Man holographic interface. Hold
+**⌥ Option** and speak, and he does real things through your tools —
 searches the web, generates images, drives your phone, reads your mail. The face
 is a web page (React + Vite + Three.js + custom GLSL). The brain is Claude Code,
 run headless as a library.
@@ -54,7 +54,7 @@ npm install
 npm start          # runs the brain and the face together
 ```
 
-Then open the URL it prints (http://localhost:5173) in **Chrome**, click **INITIALISE**, and say **“Hey Jarvis”**.
+Then open the URL it prints (http://localhost:5173) in **Chrome**, click **INITIALISE**, and hold **⌥ Option** while you speak.
 
 Prefer two terminals? Run them separately instead:
 
@@ -80,7 +80,7 @@ Then open the app in a **real Chrome or Edge window**:
 open http://localhost:5173
 ```
 
-Click **INITIALISE**, allow the microphone when asked, and say **"Hey Jarvis"**.
+Click **INITIALISE**, allow the microphone when asked, and hold **⌥ Option** while you speak.
 
 > It has to be a real browser window. Embedded preview panes block the
 > microphone, so JARVIS will look perfectly alive and simply never respond.
@@ -94,7 +94,7 @@ the brain and the hands.
 
 ```
   ┌─ browser (the face) ───────────────┐        ┌─ bridge (the brain) ─────────────┐
-  │  "Hey Jarvis" wake word            │        │  Node · bridge/server.mjs        │
+  │  hold ⌥ to talk (push-to-talk)     │        │  Node · bridge/server.mjs        │
   │  local VAD  →  speech to text      │   ws   │  Claude Agent SDK                │
   │  reactor UI (Three.js + GLSL)      │◄─────► │   = Claude Code, headless        │
   │  text to speech                    │  8787  │  spawns your MCP servers         │
@@ -311,11 +311,19 @@ they read your inbox and the open web.
 
 | Key / phrase | Does |
 |---|---|
-| **"Hey Jarvis"** | Wake him |
-| **Space** | Talk without the wake word |
-| Just speak | Interrupt him mid-sentence (barge-in) |
+| **Hold ⌥ Option** | Talk. Let go to send. Pressing it while he talks cuts him off |
 | **"Brief me"** | Read out what a job left waiting |
-| **"Yes"** / **"No"**, or **Y** / **N** | Answer an approval card |
+| **"Yes"** / **"No"** (holding ⌥), or **Y** / **N** | Answer an approval card |
+| **"Hey Jarvis"** | Wake him — only with `VITE_TALK=wake` |
+| **Space** | Power up; with `VITE_TALK=wake`, talk without the wake word |
+| Just speak | Interrupt him mid-sentence — only with `VITE_TALK=wake` |
+
+**Push-to-talk is the default.** Nothing is heard unless ⌥ Option is held:
+Chrome's speech recogniser is not even running between presses, and nothing is
+recorded, so a phone call in the same room is not overheard. The key works
+while the JARVIS window is in front — click it, then hold ⌥. For the old
+always-listening behaviour, set `VITE_TALK=wake` in `.env.local` and rebuild
+(`npm run service:install`).
 | **V** | Cycle the browser voice |
 | **Escape** | Stand down |
 | **D** | Live diagnostics panel |
@@ -366,6 +374,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 |---|---|
 | `VITE_BACKEND` | `bridge` (default) or `direct` |
 | `VITE_BRIDGE_URL` | Where to reach the bridge |
+| `VITE_TALK` | `hold` (default: push-to-talk on ⌥ Option) or `wake` ("Hey Jarvis", always listening) |
 | `VITE_TTS_ENGINE` | `system` or `kokoro` |
 | `VITE_KOKORO_VOICE` | Voice for the Kokoro engine |
 | `VITE_USE_ELEVENLABS` | Force the ElevenLabs voice on |

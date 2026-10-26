@@ -75,6 +75,25 @@ export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://local
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
 
 /**
+ * How you get his attention.
+ *
+ * 'hold' (default) — push-to-talk. Hold ⌥ Option while you speak, let go to
+ *          send. Nothing else you say is heard: the recogniser is not running
+ *          and nothing is recorded, so a phone call in the same room stays a
+ *          phone call. Option, not Space, because it does nothing on its own in
+ *          a browser window and sits under the thumb.
+ * 'wake' — always listening for "Hey Jarvis", with barge-in by voice. Hands
+ *          free, and it hears everything said near the microphone.
+ */
+export const TALK: 'hold' | 'wake' = choice(
+  'VITE_TALK',
+  import.meta.env.VITE_TALK,
+  ['hold', 'wake'] as const,
+  'hold',
+)
+export const PUSH_TO_TALK = TALK === 'hold'
+
+/**
  * Speech output engine.
  *
  * false (default) — the browser's own speechSynthesis. Runs on-device, so

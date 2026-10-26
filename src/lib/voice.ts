@@ -49,13 +49,37 @@ export type VoiceHandlers = {
   onUtterance: (text: string) => void
   /** The recogniser is unusable. Distinct from the user saying nothing. */
   onError: (message: string) => void
+  /**
+   * Push-to-talk. When set, nothing is heard except while `hold(true)` is in
+   * force: the browser recogniser is not even running, and the recorder is not
+   * recording. `mode` stops deciding what is heard — the key does — and there
+   * is no wake word and no barge-in by voice.
+   */
+  pushToTalk?: boolean
 }
 
 export type Voice = {
   stop: () => void
   /** True while a recogniser is actually running. */
   live: () => boolean
+  /**
+   * Push-to-talk: `hold(true)` when the key goes down, `hold(false)` when it
+   * comes up. Releasing sends everything said while it was held as one
+   * utterance, and resolves true if anything was heard — false for a press
+   * with nothing intelligible in it, so the caller can stand down.
+   */
+  hold: (on: boolean) => Promise<boolean>
 }
+
+/**
+ * Push-to-talk, shared between startVoice and whichever engine runs.
+ *
+ *   held      — the key is down.
+ *   capturing — held, or released and still turning what was said into text.
+ *               This is what keeps the words of a just-released press from
+ *               being dropped as "not listening" on their way out.
+ */
+type Ptt = { enabled: boolean; held: boolean; capturing: boolean }
 
 // ---------------------------------------------------------------------------
 // Endpointing
@@ -386,26 +410,49 @@ if (typeof window !== 'undefined') {
  * The microphone is opened once here so a denied permission is reported loudly
  * rather than surfacing later as an unexplained deafness, whichever engine runs.
  */
-export async function startVoice(h: VoiceHandlers): Promise<Voice> {
+export async function startVoice(handlers: VoiceHandlers): Promise<Voice> {
   try {
     await getMic()
   } catch (err) {
     diag.lastError = 'mic'
-    h.onError(
+    handlers.onError(
       err instanceof DOMException && err.name === 'NotAllowedError'
         ? 'Microphone access denied — voice input is unavailable.'
         : 'No microphone available.',
     )
-    return { stop: () => {}, live: () => false }
+    return { stop: () => {}, live: () => false, hold: async () => false }
   }
+
+  // Under push-to-talk the key is the mode: everything is a command while it is
+  // held, and nothing exists otherwise. Both engines read the mode through
+  // here, so neither needs to know which kind of listening it is doing.
+  const ptt: Ptt = { enabled: Boolean(handlers.pushToTalk), held: false, capturing: false }
+  const h: VoiceHandlers = {
+    ...handlers,
+    mode: () => (ptt.enabled ? (ptt.capturing ? 'command' : 'deaf') : handlers.mode()),
+  }
+
   diag.engine = caps().stt ? 'elevenlabs' : 'browser'
-  return caps().stt ? startElevenVoice(h) : startBrowserVoice(h)
+  return caps().stt ? startElevenVoice(h, ptt) : startBrowserVoice(h, ptt)
 }
 
 /** VAD + ElevenLabs Scribe. */
-async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
+async function startElevenVoice(h: VoiceHandlers, ptt: Ptt): Promise<Voice> {
   let lastWake = 0
   let vad: Vad | null = null
+
+  /**
+   * One per released press, oldest first, resolved as each press's recording
+   * comes back as text. A queue because a second press can be released while
+   * the first is still with the transcriber, and recordings drain in order.
+   */
+  const finishers: Array<(heard: boolean) => void> = []
+
+  const finishPress = (heard: boolean) => {
+    ptt.capturing = ptt.held
+    if (!ptt.held) h.onPartial('')
+    finishers.shift()?.(heard)
+  }
 
   /**
    * Segments waiting for the transcriber, oldest first.
@@ -445,9 +492,14 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
    * transcript arriving — and the transcript belongs to the mode the user is in
    * now, not the one they interrupted.
    */
-  const transcribe = async (blob: Blob) => {
+  const transcribe = async (blob: Blob): Promise<boolean> => {
     const mode = h.mode()
-    if (mode === 'deaf') return
+    if (mode === 'deaf') return false
+    // A tap of the key with nothing said: not worth a round trip.
+    if (ptt.enabled && blob.size < 1200) {
+      drop('nothing recorded')
+      return false
+    }
     const t0 = performance.now()
     try {
       const res = await fetch(`${BRIDGE_HTTP_URL}/stt`, {
@@ -460,7 +512,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
         diag.restarts++
         diag.lastError = `stt ${res.status}`
         drop(`transcription failed (${res.status})`)
-        return
+        return false
       }
       const { text } = (await res.json()) as { text?: string }
       const said = (text ?? '').trim()
@@ -468,18 +520,28 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
 
       if (!said) {
         drop('nothing intelligible in the segment')
-        return
+        return false
       }
 
       // His own voice, come back through the microphone. The raised guard
       // threshold stops most of it at the door; this catches the rest.
       if (isEcho(said, speakingNow())) {
         drop('echo of his own voice')
-        return
+        return false
       }
 
       diag.heard = said
       diag.heardAt = Date.now()
+
+      // Push-to-talk: the recording is the whole of what they meant to say —
+      // they told us where it ended by letting go — so it goes straight on,
+      // with no assembler second-guessing whether the thought was finished.
+      if (ptt.enabled) {
+        diag.dropped = ''
+        diag.accepted++
+        h.onUtterance(said)
+        return true
+      }
 
       if (mode === 'wake') {
         if (WAKE.test(said) && Date.now() - lastWake > WAKE_DEBOUNCE) {
@@ -491,16 +553,18 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
         } else {
           drop(`heard "${said.slice(-40)}" — not his name`)
         }
-        return
+        return false
       }
 
       // Not a turn yet — a piece of one. The assembler decides when the thought
       // is finished, reading the words and whether the room is still noisy.
       assemble.feed(said, vad?.meter().speaking ?? false)
+      return true
     } catch (err) {
       diag.restarts++
       diag.lastError = String(err)
       drop('could not reach the speech service')
+      return false
     }
   }
 
@@ -510,7 +574,10 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     draining = true
     try {
       while (pendingAudio.length) {
-        await transcribe(pendingAudio.shift()!)
+        const heard = await transcribe(pendingAudio.shift()!)
+        // Under push-to-talk each recording is one press, so its transcript —
+        // or the lack of one — is what the press was waiting on.
+        if (ptt.enabled) finishPress(heard)
       }
     } finally {
       draining = false
@@ -547,6 +614,9 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       // dormant reactor stays calm and does not twitch at every room noise.
       const mode = h.mode()
       if (mode !== 'command') return
+      // Only while the key is actually down; once it is up the words are
+      // already on their way.
+      if (ptt.enabled && !ptt.held) return
       // Never over the assembled text. This used to run unconditionally and
       // overwrote a half-built sentence with an ellipsis sixty times a second,
       // so a pause looked like the interface had forgotten what you just said.
@@ -558,7 +628,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       diag.running = false
       h.onError(message)
     },
-  })
+  }, { manual: ptt.enabled })
   diag.running = vad.live()
 
   // Raise the trigger bar exactly while he speaks. The mode is polled rather
@@ -582,6 +652,26 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       diag.running = false
     },
     live: () => vad?.live() ?? false,
+    hold: (on) => {
+      if (!ptt.enabled) return Promise.resolve(false)
+      if (on) {
+        if (ptt.held) return Promise.resolve(false)
+        ptt.held = true
+        ptt.capturing = true
+        diag.sessions++
+        vad?.begin()
+        return Promise.resolve(false)
+      }
+      if (!ptt.held) return Promise.resolve(false)
+      ptt.held = false
+      return new Promise<boolean>((resolve) => {
+        finishers.push(resolve)
+        // end() always hands back a recording, empty or not, so the drain
+        // always reaches finishPress and this always resolves.
+        if (vad) vad.end()
+        else finishPress(false)
+      })
+    },
   }
 }
 
@@ -599,12 +689,12 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
  * between "the wake word stopped working halfway through the lesson" and an
  * assistant that keeps listening.
  */
-function startBrowserVoice(h: VoiceHandlers): Voice {
+function startBrowserVoice(h: VoiceHandlers, ptt: Ptt): Voice {
   const Ctor =
     (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
   if (!Ctor) {
     h.onError('This browser has no speech recognition — use Chrome or Edge, or add an ElevenLabs key.')
-    return { stop: () => {}, live: () => false }
+    return { stop: () => {}, live: () => false, hold: async () => false }
   }
 
   let stopped = false
@@ -617,6 +707,22 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   let lastWake = 0
   let lastAlive = Date.now()
   let silenceTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Push-to-talk. Chrome's recogniser streams the microphone to a speech
+   * service for as long as it runs, so "ignoring" what it hears would still
+   * send every word of a phone call somewhere. Under push-to-talk it runs only
+   * while the key is held; between presses there is nothing to ignore.
+   *
+   * `pressed` is everything said during the current press — the recogniser
+   * endpoints on pauses, so one press can produce several pieces.
+   * `releasing` is set between letting go and the recogniser's final words.
+   */
+  let pressed = ''
+  let releasing: (() => void) | null = null
+
+  /** Whether the recogniser should be running at all right now. */
+  const wanted = () => !stopped && (!ptt.enabled || ptt.held)
 
   /** Same assembly rules as the premium path — a pause is not a full stop. */
   const assemble = makeAssembler({
@@ -668,6 +774,12 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       } else {
         drop(`heard "${text.slice(-40)}" — not his name`)
       }
+      return
+    }
+    // Push-to-talk: a pause is just a pause. The press ends the thought.
+    if (ptt.enabled) {
+      pressed = `${pressed} ${text}`.trim()
+      h.onPartial(pressed)
       return
     }
     // The recogniser has already endpointed on its own 900ms gap; the assembler
@@ -749,14 +861,16 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     }
     diag.dropped = ''
     // Show the whole thought, not just the fragment being spoken now — there
-    // may be an earlier half of it held by the assembler.
-    const carried = assemble.held()
+    // may be an earlier half of it held by the assembler, or earlier in the press.
+    const carried = ptt.enabled ? pressed : assemble.held()
     h.onPartial(carried ? `${carried} ${full}` : full)
     bumpSilence()
   }
 
   const spin = () => {
-    if (stopped || running) return
+    // `rec` as well as `running`: between start() and onstart neither is true
+    // of the other, and a press landing in that gap must not build a second.
+    if (!wanted() || running || rec) return
     rec = new Ctor()
     rec.continuous = true
     rec.interimResults = true
@@ -781,22 +895,27 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       diag.running = false
       touch()
       rec = null
-      if (!stopped) setTimeout(spin, 80)
+      // A release waits for this: the recogniser's last words arrive before it.
+      releasing?.()
+      // Chrome also ends sessions on its own after a silence. Come straight
+      // back — unless push-to-talk has let go, when ending was the point.
+      if (wanted()) setTimeout(spin, 80)
     }
     try {
       rec.start()
     } catch {
+      rec = null
       running = false
-      setTimeout(spin, 250)
+      if (wanted()) setTimeout(spin, 250)
     }
   }
 
-  spin()
+  if (wanted()) spin()
 
   // The heartbeat. If nothing has been heard from the engine for a while it has
   // gone quiet on us — tear it down and build a fresh one.
   const health = setInterval(() => {
-    if (stopped) return
+    if (!wanted()) return
     const idle = Date.now() - lastAlive
     diag.idleMs = idle
     if (idle < 15000) return
@@ -827,5 +946,65 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
       }
     },
     live: () => running,
+    hold: (on) => {
+      if (!ptt.enabled) return Promise.resolve(false)
+      if (on) {
+        if (ptt.held) return Promise.resolve(false)
+        ptt.held = true
+        ptt.capturing = true
+        reset()
+        pressed = ''
+        touch()
+        spin()
+        return Promise.resolve(false)
+      }
+      if (!ptt.held) return Promise.resolve(false)
+      ptt.held = false
+
+      return new Promise<boolean>((resolve) => {
+        let done = false
+        const finish = () => {
+          if (done) return
+          done = true
+          clearTimeout(fallback)
+          releasing = null
+          // Whatever the recogniser had not yet endpointed is part of it too.
+          emit()
+          const text = pressed.trim()
+          pressed = ''
+          ptt.capturing = ptt.held
+          h.onPartial('')
+          if (text) {
+            diag.dropped = ''
+            diag.accepted++
+            h.onUtterance(text)
+          } else {
+            drop('nothing heard during the press')
+          }
+          resolve(Boolean(text))
+        }
+        // stop(), not abort(): stop delivers the final words, then onend.
+        // Bounded, because a recogniser that never reports back must not leave
+        // the press hanging.
+        const fallback = setTimeout(() => {
+          try {
+            rec?.abort()
+          } catch {
+            /* already gone */
+          }
+          finish()
+        }, 1500)
+        if (rec) {
+          releasing = finish
+          try {
+            rec.stop()
+          } catch {
+            finish()
+          }
+        } else {
+          finish()
+        }
+      })
+    },
   }
 }

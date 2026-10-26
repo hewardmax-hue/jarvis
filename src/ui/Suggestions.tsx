@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useStore } from '../store'
+import { PUSH_TO_TALK } from '../config'
 
 /**
  * Rotating example commands, shown only while idle.
@@ -52,7 +53,7 @@ export function Suggestions() {
           exit={{ opacity: 0, y: -6 }}
           transition={{ duration: 0.35 }}
         >
-          “hey jarvis, {EXAMPLES[i]}”
+          {PUSH_TO_TALK ? `hold ⌥ — “${EXAMPLES[i]}”` : `“hey jarvis, ${EXAMPLES[i]}”`}
         </motion.span>
       </AnimatePresence>
     </div>

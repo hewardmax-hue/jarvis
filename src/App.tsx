@@ -13,7 +13,7 @@ import * as hands from './lib/hands'
 import { listenForClap } from './lib/clap'
 import * as camera from './lib/camera'
 import * as kokoro from './lib/kokoro'
-import { TTS_ENGINE } from './config'
+import { PUSH_TO_TALK, TTS_ENGINE } from './config'
 import { forTool, attention } from './lib/fillers'
 import {
   ask,
@@ -118,6 +118,28 @@ export default function App() {
     s.setPhase('dormant')
   }
 
+  /**
+   * Between turns under push-to-talk. There is no open microphone to wait on —
+   * nothing is heard until the key goes down — so he simply stands by.
+   */
+  const standBy = () => {
+    clearIdle()
+    const s = store.getState()
+    s.setCaption('')
+    s.setPhase('dormant')
+  }
+
+  /** Stop him mid-answer. The turn in flight is abandoned, not finished. */
+  const cutOff = () => {
+    silence()
+    turn.current++
+    interrupt()
+    store.getState().setActiveTool(null)
+    music.working(false)
+    sfx.duck(false)
+    music.duck(false)
+  }
+
   /** Open the mic and wait. `window` is how long before he gives up. */
   const listen = (window: number) => {
     clearIdle()
@@ -219,8 +241,10 @@ export default function App() {
         store.getState().setActiveTool(null)
         music.working(false)
         // Stay open. Having to say his name again to add one more sentence is
-        // the difference between a conversation and a vending machine.
-        listen(FOLLOW_UP_MS)
+        // the difference between a conversation and a vending machine. Under
+        // push-to-talk the key is how you add one, so he stands by instead.
+        if (PUSH_TO_TALK) standBy()
+        else listen(FOLLOW_UP_MS)
       }
     }
   }
@@ -287,6 +311,8 @@ export default function App() {
    */
   const onSpeechStart = () => {
     clearIdle()
+    // Under push-to-talk the key press already did all of this.
+    if (PUSH_TO_TALK) return
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
     // Talking while a card is up is answering it. Cutting him off here would
@@ -296,23 +322,25 @@ export default function App() {
     const wasBusy =
       phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
 
-    silence()
-    if (wasBusy) {
-      // Abandon the answer in flight. The turn counter moves in respond()'s
-      // replacement; bumping it here covers the case where nothing replaces it.
-      turn.current++
-      interrupt()
-      store.getState().setActiveTool(null)
-      music.working(false)
-      sfx.duck(false)
-      music.duck(false)
-    }
+    // Abandon the answer in flight. The turn counter moves in respond()'s
+    // replacement; bumping it here covers the case where nothing replaces it.
+    if (wasBusy) cutOff()
+    else silence()
     store.getState().setPhase('listening')
+  }
+
+  /** Nothing usable was said: keep listening, or under push-to-talk, stand by. */
+  const awaitMore = () => {
+    if (PUSH_TO_TALK) standBy()
+    else listen(AWAIT_SPEECH_MS)
   }
 
   const onUtterance = (text: string) => {
     const phase = store.getState().phase
-    if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
+    if (phase === 'offline' || phase === 'boot') return
+    // Push-to-talk words only exist because the key was held, so they count
+    // whatever the phase — a slow transcript can land after he stood by.
+    if (phase === 'dormant' && !PUSH_TO_TALK) return
 
     // A card is up: this is its answer. Anything that is neither yes nor no is
     // a change of mind — the action is refused and what they said becomes the
@@ -330,12 +358,12 @@ export default function App() {
     // People keep using his name as a vocative once they're already talking to
     // him. Strip it rather than sending "jarvis" to the model as a question.
     if (BARE_NAME.test(text)) {
-      listen(AWAIT_SPEECH_MS)
+      awaitMore()
       return
     }
     const said = text.replace(LEADING_NAME, '').trim()
     if (!said) {
-      listen(AWAIT_SPEECH_MS)
+      awaitMore()
       return
     }
 
@@ -344,6 +372,41 @@ export default function App() {
 
   const onPartial = (text: string) => {
     store.getState().setCaption(text)
+  }
+
+  // -- push-to-talk ---------------------------------------------------------
+
+  /**
+   * ⌥ went down. Stop him if he is talking, and start hearing — the only
+   * moment anything is heard at all under push-to-talk.
+   */
+  const pressTalk = () => {
+    const s = store.getState()
+    if (s.phase === 'offline' || s.phase === 'boot' || !voice.current) return
+    s.setError(null)
+    clearIdle()
+    // A card is up and the turn is held open on it: this press is its answer,
+    // so nothing is interrupted and the turn keeps its phase.
+    if (!s.approval) {
+      if (s.phase === 'thinking' || s.phase === 'tooling' || s.phase === 'speaking') cutOff()
+      else silence()
+      s.setCaption('')
+      s.setPhase('listening')
+    }
+    sfx.play('listen')
+    void voice.current.hold(true)
+  }
+
+  /** ⌥ came up. What was said goes as one turn; a press with nothing in it stands by. */
+  const releaseTalk = () => {
+    if (!voice.current) return
+    void voice.current.hold(false).then((heard) => {
+      if (heard) return
+      const s = store.getState()
+      // Still waiting on a yes or no: leave the card up for another try.
+      if (s.approval) return
+      if (s.phase === 'listening') standBy()
+    })
   }
 
   const onVoiceError = (message: string) => {
@@ -582,9 +645,23 @@ export default function App() {
       onPartial,
       onUtterance,
       onError: onVoiceError,
+      pushToTalk: PUSH_TO_TALK,
     })
 
     store.getState().setPhase('dormant')
+
+    // With no wake word there is no greeting for a waiting briefing to take
+    // over, so it is announced once, now, as he comes up.
+    if (PUSH_TO_TALK) {
+      const fresh = store.getState().notices.find((n) => !announced.current.has(n.id))
+      if (fresh) {
+        announced.current.add(fresh.id)
+        const line = createSpeaker()
+        speaker.current = line
+        line.say(`Sir, your ${fresh.title.toLowerCase()} is ready.`)
+        void line.end()
+      }
+    }
   }
 
   // -- clap to start --------------------------------------------------------
@@ -639,6 +716,16 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      // ⌥ Option on its own is the talk key under push-to-talk. With ⌘, ⌃ or
+      // ⇧ it is a shortcut for something else, and is left alone.
+      if (PUSH_TO_TALK && e.key === 'Alt') {
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+          e.preventDefault()
+          pressTalk()
+        }
+        return
+      }
 
       // Y and N answer an approval card. Only while one is up — the rest of
       // the time neither key means anything.
@@ -735,11 +822,13 @@ export default function App() {
       }
 
       // Space starts a turn without the wake word. Worth using while filming so
-      // a missed wake word doesn't cost a take.
+      // a missed wake word doesn't cost a take. Under push-to-talk it only
+      // powers him up: opening the microphone is the talk key's job alone.
       if (e.code !== 'Space' || e.repeat) return
       e.preventDefault()
 
       const phase = store.getState().phase
+      if (PUSH_TO_TALK && phase !== 'offline') return
       if (phase === 'offline') {
         void powerOn()
       } else if (phase === 'boot') {
@@ -757,9 +846,28 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
 
+    // Letting go of ⌥ sends. So does losing the window mid-press — ⌘-Tab away
+    // while holding it and the keyup goes to another app, which would otherwise
+    // leave him listening with nobody holding the key.
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (PUSH_TO_TALK && e.key === 'Alt') releaseTalk()
+    }
+    const onLeave = () => {
+      if (PUSH_TO_TALK) releaseTalk()
+    }
+    const onVisibility = () => {
+      if (document.hidden) onLeave()
+    }
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onLeave)
+    document.addEventListener('visibilitychange', onVisibility)
+
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onLeave)
+      document.removeEventListener('visibilitychange', onVisibility)
       clearIdle()
       if (voicePoll.current) clearInterval(voicePoll.current)
       voice.current?.stop()

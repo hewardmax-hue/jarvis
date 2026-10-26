@@ -43,6 +43,11 @@ export type Vad = {
   /** Raise the trigger bar while JARVIS speaks, so his own playback leaking
    *  past echo cancellation does not register as the user talking. */
   setGuard: (on: boolean) => void
+  /** Manual mode only: start recording now, whatever the energy says. */
+  begin: () => void
+  /** Manual mode only: stop, and hand over whatever was recorded — an empty
+   *  blob if nothing was, so the caller always hears back. */
+  end: () => void
   live: () => boolean
   /** Live internals, for the diagnostics panel. */
   meter: () => { energy: number; floor: number; threshold: number; speaking: boolean }
@@ -99,7 +104,22 @@ function pickMime(): string {
   return ''
 }
 
-export async function startVad(h: VadHandlers): Promise<Vad> {
+/**
+ * `manual` is push-to-talk. The energy gate still runs — it drives the level
+ * meter — but it never starts or ends a segment: `begin` and `end` do, so the
+ * recording is exactly the time the key was held and nothing outside it is
+ * ever captured.
+ */
+export async function startVad(h: VadHandlers, opts: { manual?: boolean } = {}): Promise<Vad> {
+  const dead = (): Vad => ({
+    stop: () => {},
+    setGuard: () => {},
+    begin: () => {},
+    end: () => h.onEnd(new Blob([]), 0),
+    live: () => false,
+    meter: () => ({ energy: 0, floor: 0, threshold: 0, speaking: false }),
+  })
+
   let stream: MediaStream
   try {
     stream = await getMic()
@@ -109,12 +129,12 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
         ? 'Microphone access denied — voice input is unavailable.'
         : 'No microphone available.',
     )
-    return { stop: () => {}, setGuard: () => {}, live: () => false, meter: () => ({ energy: 0, floor: 0, threshold: 0, speaking: false }) }
+    return dead()
   }
 
   if (typeof MediaRecorder === 'undefined') {
     h.onError('This browser cannot record audio — voice input is unavailable.')
-    return { stop: () => {}, setGuard: () => {}, live: () => false, meter: () => ({ energy: 0, floor: 0, threshold: 0, speaking: false }) }
+    return dead()
   }
 
   const mime = pickMime()
@@ -219,6 +239,9 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
     const release = threshold * RELEASE_RATIO
     const now = performance.now()
 
+    // Push-to-talk: the key decides when speech starts and stops, not the room.
+    if (opts.manual) return
+
     if (!speaking) {
       if (smoothEnergy > threshold) {
         if (armedAt === 0) {
@@ -266,6 +289,20 @@ export async function startVad(h: VadHandlers): Promise<Vad> {
     },
     setGuard: (on) => {
       guard = on
+    },
+    begin: () => {
+      if (stopped || recorder) return
+      startRecorder()
+      speaking = true
+      speechStartedAt = performance.now()
+    },
+    end: () => {
+      if (!recorder) {
+        h.onEnd(new Blob([], { type: mime || 'audio/webm' }), 0)
+        return
+      }
+      armedAt = 0
+      endSegment()
     },
     live: () => !stopped,
     meter: () => ({ energy: smoothEnergy, floor, threshold, speaking }),
