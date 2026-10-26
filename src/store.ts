@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ApprovalRequest, Notice } from './lib/bridge'
 
 export type Phase =
   | 'offline'   // waiting for the click that unlocks audio
@@ -240,7 +241,14 @@ type State = {
   expandedBlade: string | null
   /** JARVIS's control over his own appearance. UI_DEFAULTS == the stock look. */
   ui: UiState
+  /** An action held for the user's yes, shown as a card. One at a time: the
+   *  agent waits on each before it can ask for the next. */
+  approval: ApprovalRequest | null
+  /** Briefings finished by background jobs and not yet read. */
+  notices: Notice[]
 
+  setApproval: (a: ApprovalRequest | null) => void
+  setNotices: (n: Notice[]) => void
   setVoice: (v: string) => void
   setGestures: (on: boolean) => void
   setLooking: (why: string | null) => void
@@ -287,7 +295,11 @@ export const useStore = create<State>((set) => ({
   expandedBlade: null,
   bootNote: '',
   ui: defaultUi(),
+  approval: null,
+  notices: [],
 
+  setApproval: (approval) => set({ approval }),
+  setNotices: (notices) => set({ notices }),
   setVoice: (voice) => set({ voice }),
   setGestures: (gestures) => set({ gestures }),
   setLooking: (looking) => set({ looking }),

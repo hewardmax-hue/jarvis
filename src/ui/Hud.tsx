@@ -6,6 +6,7 @@ import { BladeSweep, Blades } from './Blades'
 import { Effects } from './Effects'
 import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
+import { decide } from '../lib/approval'
 
 const statusText: Record<Phase, string> = {
   offline: 'OFFLINE',
@@ -144,6 +145,95 @@ function DecodeText({ text }: { text: string }) {
   )
 }
 
+/* ---------------------------------------------------------------- approval */
+
+/**
+ * The question, on screen.
+ *
+ * He says what he is about to do; this shows what will literally run — the
+ * command, the text being typed, the path — because that is the part worth
+ * checking and the part a spoken summary smooths over. Amber whatever the
+ * theme: it is the one thing on the glass that is waiting on you.
+ *
+ * Answered by voice ("yes" / "no"), by Y and N, or by clicking. The countdown
+ * is the bridge's own deadline, after which silence counts as no.
+ */
+function ApprovalCard() {
+  const approval = useStore((s) => s.approval)
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!approval) return
+    const t = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(t)
+  }, [approval])
+
+  const left = approval ? Math.max(0, Math.ceil((approval.expiresAt - now) / 1000)) : 0
+
+  return (
+    <AnimatePresence>
+      {approval && (
+        <motion.div
+          key={approval.id}
+          className="approval"
+          role="alertdialog"
+          aria-label={`Approve ${approval.title}?`}
+          initial={{ opacity: 0, x: '-50%', y: -12, filter: 'blur(6px)' }}
+          animate={{ opacity: 1, x: '-50%', y: 0, filter: 'blur(0px)' }}
+          exit={{ opacity: 0, x: '-50%', y: -12, filter: 'blur(6px)' }}
+          transition={{ type: 'spring', stiffness: 300, damping: 26 }}
+        >
+          <div className="approval-kicker">
+            <span className="approval-dot" />
+            approval required
+            <span className="approval-clock">{left}s</span>
+          </div>
+          <div className="approval-title">{approval.title}</div>
+          {approval.detail && <pre className="approval-detail">{approval.detail}</pre>}
+          <div className="approval-actions">
+            <button type="button" className="approval-btn approval-yes" onClick={() => decide(true)}>
+              approve <kbd>Y</kbd>
+            </button>
+            <button type="button" className="approval-btn approval-no" onClick={() => decide(false)}>
+              deny <kbd>N</kbd>
+            </button>
+            <span className="approval-hint">or say “yes” / “no”</span>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+/**
+ * Briefings waiting to be read. Under the status line, out of the way: it is
+ * news, not an alarm, and it goes the moment he reads one out.
+ */
+function NoticeChip() {
+  const notices = useStore((s) => s.notices)
+  const latest = notices.at(-1)
+  return (
+    <AnimatePresence>
+      {latest && (
+        <motion.div
+          className="notice-chip"
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          title={latest.headline}
+        >
+          <span className="notice-dot" />
+          <span>
+            {latest.title} ready
+            {notices.length > 1 ? ` · +${notices.length - 1}` : ''}
+          </span>
+          <span className="notice-say">say “brief me”</span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
 /* --------------------------------------------------------------------- hud */
 
 export function Hud() {
@@ -206,6 +296,8 @@ export function Hud() {
           </span>
         </div>
       </header>
+
+      {phase !== 'offline' && phase !== 'boot' && <NoticeChip />}
 
       {/* Left rail: which integrations are live */}
       {ui.chrome.systems && (
@@ -326,6 +418,10 @@ export function Hud() {
           underneath the chrome. It is pointer-events: none and unmounts the
           instant it finishes. */}
       <Effects />
+
+      {/* Above the blades and the effects: nothing on the glass may cover a
+          question that is holding a turn open. */}
+      <ApprovalCard />
 
       {/* Above even the effects: the reticle shows where a press will land, and
           a press that lands under a flourish is a press you cannot aim. */}

@@ -1,0 +1,7 @@
+{
+  "//": "What JARVIS may do that changes something. Reads and generation always run; this file decides everything else. Each list holds tool-name patterns, where * matches anything: \"Bash\", \"mcp__jarvis_chrome__chrome_click\", \"mcp__android__*\". deny beats allow beats ask, and anything unlisted gets 'default'. 'ask' puts a card on screen and waits for you to say or click yes. Background jobs never ask: with nobody there to answer, anything not allowed is refused and written up under Proposed actions instead. Saved changes apply to the next action.",
+  "default": "ask",
+  "allow": [],
+  "ask": [],
+  "deny": []
+}
