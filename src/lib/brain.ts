@@ -85,6 +85,25 @@ export function watchCapture(
 }
 
 /**
+ * Actions waiting for a yes, and briefings waiting to be read — the two ways
+ * the always-on half of the bridge reaches for the user. Bridge-only: the
+ * direct path has no gate to ask from and no jobs to report.
+ */
+export type { ApprovalRequest, Notice } from './bridge'
+
+export function watchApprovals(on: Parameters<typeof bridge.watchApprovals>[0]): void {
+  if (usingBridge) bridge.watchApprovals(on)
+}
+
+export function answerApproval(id: string, approved: boolean): void {
+  if (usingBridge) bridge.answerApproval(id, approved)
+}
+
+export function watchNotices(fn: (items: bridge.Notice[]) => void): void {
+  if (usingBridge) bridge.watchNotices(fn)
+}
+
+/**
  * Barge-in. Stops the answer on both paths and settles whatever `ask()` call
  * is outstanding, so the caller's await always returns — on the bridge by
  * interrupting the agent and resolving with the text so far, on the direct

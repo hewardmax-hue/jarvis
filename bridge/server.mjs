@@ -21,6 +21,19 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { memoryServer } from './memory.mjs'
+import { createScheduler } from './scheduler.mjs'
+import { ALLOW_WRITES, MCP_SERVERS, decideTool, describeCall, verdict } from './gate.mjs'
+import { AGENTS, TIERS } from './models.mjs'
+import {
+  HOME,
+  contextBlock,
+  ensureHome,
+  readState,
+  unreadBriefings,
+  updateState,
+} from './home.mjs'
+import { spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -86,208 +99,6 @@ function originAllowed(origin) {
   if (url.protocol !== 'http:') return false
   if (!LOCAL_HOSTS.has(url.hostname)) return false
   return isDevPort(Number(url.port))
-}
-
-/**
- * Voice is a bad interface for a confirmation dialog: there is no window to
- * click and the model can't pause for one. So the bridge decides.
- *
- * Read-only and generative tools run freely. Anything that writes to disk,
- * runs a shell, or changes the world waits for JARVIS_ALLOW_WRITES=1. Start
- * without it, and turn it on once you trust what you're demoing.
- */
-const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
-
-/**
- * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
- * — claude-sonnet-5 is noticeably snappier on camera if Opus feels slow.
- */
-const MODEL = process.env.JARVIS_MODEL ?? 'claude-opus-5'
-
-/**
- * How hard the model thinks before answering.
- *
- * This was 'low', on the reasoning that a voice assistant is judged on latency
- * — and that is true right up until the answer is thin. Low effort scopes the
- * work tightly to what was literally asked: fewer tool calls, less
- * cross-referencing, no second look. On a model of this tier that is leaving
- * most of it on the table.
- *
- * 'medium' is the compromise worth having here. It reasons and reaches for
- * tools noticeably more than 'low' while still answering inside the window a
- * spoken conversation tolerates. Raise it to 'high' or 'xhigh' when quality
- * matters more than pace; drop back to 'low' when filming and every second of
- * dead air shows.
- */
-const EFFORT = process.env.JARVIS_EFFORT ?? 'high'
-
-/**
- * Both spellings of every renamed built-in are listed on purpose. The SDK
- * presents several tools to the model under newer names — Task is Agent,
- * BashOutput is TaskOutput, KillShell is TaskStop, and the MCP resource tools
- * gained a "Tool" suffix — so a set holding only the old names never matches
- * and the tool falls through to the write branch, which is the opposite of
- * what these lists mean. Keep both until the old names are certainly gone.
- */
-const READ_ONLY_BUILTINS = new Set([
-  'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'TodoWrite',
-  'Task', 'Agent', 'ToolSearch',
-  'ListMcpResources', 'ListMcpResourcesTool',
-  'ReadMcpResource', 'ReadMcpResourceTool',
-  'BashOutput', 'TaskOutput',
-])
-const WRITE_BUILTINS = new Set([
-  'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
-  'KillShell', 'TaskStop',
-])
-
-/**
- * Every MCP server Claude Code has configured, read out of its own config.
- *
- * This does two jobs. The HUD wants the names while the boot animation plays,
- * and the agent doesn't emit its init message — and therefore its server
- * list — until the first user message flows through, which is far too late.
- * More importantly, this bridge turns filesystem settings off (see
- * settingSources below) and the SDK stops discovering these servers on its
- * own, so handing them over explicitly is what keeps the local stdio ones —
- * the whole reason the bridge exists — in play.
- *
- * Only the global block and the home-directory project scope, because
- * homedir() is our cwd. That makes the list a close but not exact match for
- * the agent's own: the 'ready' sent on connect comes from here and the second
- * one, sent from the init message a turn later, carries live status. Expect
- * the two to differ, and treat the later one as authoritative.
- */
-function configuredServers() {
-  try {
-    const cfg = JSON.parse(
-      readFileSync(join(homedir(), '.claude.json'), 'utf8'),
-    )
-    return {
-      ...(cfg.mcpServers ?? {}),
-      // Servers scoped to the home directory apply too, since that's our cwd.
-      ...(cfg.projects?.[homedir()]?.mcpServers ?? {}),
-    }
-  } catch {
-    return {}
-  }
-}
-
-const MCP_SERVERS = configuredServers()
-
-/** MCP tools arrive as `mcp__<server>__<tool>`. */
-const mcpServerOf = (toolName) =>
-  toolName.startsWith('mcp__') ? toolName.split('__')[1] : null
-
-/** The tool half, which can itself contain underscores: `mcp__x__a__b` -> `a__b`. */
-const mcpToolOf = (toolName) => toolName.split('__').slice(2).join('__')
-
-/**
- * MCP policy, and why it is shaped this way.
- *
- * A short list of "servers that can change things" is the wrong default,
- * because it is a list of what we happened to think of. Every server not on it
- * runs unconditionally — and on a real machine that quietly includes placing a
- * phone call, spending an advertising budget, deleting a generated character
- * and writing files to disk. A voice assistant cannot ask "are you sure", so
- * the bridge has to be the one that is sure.
- *
- * So the default is deny, softened in two ways so the demo stays usable:
- *
- *   1. READ_ONLY_MCP is an explicit allowlist of servers whose whole surface is
- *      lookups and generation — search, registries, analytics reads. Anything
- *      there runs in read-only mode.
- *   2. Everywhere else, the tool has to argue for itself: its own name must
- *      begin with a read verb. `list_devices` runs; `install_apk` does not.
- *
- * On top of both sits a veto: a name containing a plainly effectful verb needs
- * ALLOW_WRITES no matter which server it came from, which is what keeps
- * `make_outbound_call` and `download_lottie` still until you ask for them.
- */
-const READ_ONLY_MCP = new Set([
-  'exa', 'exa-code', 'serper', 'serpapi', 'lottie-search', 'mcp-registry',
-  'openrouter', 'openrouter-image', 'Microsoft_Clarity',
-  // The generation servers belong here too, and leaving them out was a real
-  // regression: `generate_image` begins with no read verb, so it fell to the
-  // deny branch and "generate an image of the Mark VII suit" — the headline
-  // demo — stopped working in the default mode.
-  //
-  // Putting them on the allowlist is safe because the veto below still applies
-  // to allowlisted servers: it is what continues to withhold
-  // make_outbound_call, delete_character, create_* and edit_image. Generation
-  // runs; acting on the world does not.
-  'higgsfield', 'heygen', 'elevenlabs',
-])
-
-/**
- * Anchored on the tool name, so it reads the verb rather than the noun.
- * `screenshot` is in here because it is a read that doesn't sound like one,
- * and the persona is told in as many words to put screenshots on the display.
- */
-const READ_VERB =
-  /^(get|list|read|search|find|query|fetch|check|describe|inspect|show|view|explain|screenshot)/i
-
-/**
- * Unanchored on purpose — `make_outbound_call` and `Bulk-Edit-Events` both
- * hide their verb in the middle. `download` is here because it writes a file
- * even though it sounds like a read.
- */
-const EFFECTFUL_VERB =
-  /(send|call|post|create|delete|remove|update|edit|write|install|launch|tap|swipe|press|type|buy|pay|charge|publish|deploy|outbound|download)/i
-
-/**
- * Tools whose names trip the veto without deserving it.
- *
- * The veto reads verbs out of names, which is the right instinct and
- * occasionally the wrong answer. `openrouter send-message` sends a prompt to a
- * language model and gets text back — nothing in the world changes — but it is
- * indistinguishable by name from sending mail. Asking a second model a question
- * is one of the better things this assistant can do, so it is named here
- * instead of being lost to a regex.
- *
- * Full `server__tool` keys, so an exemption can never leak across servers.
- */
-const VETO_EXEMPT = new Set([
-  'openrouter__send-message',
-  'openrouter__send-feedback',
-])
-
-function decideTool(name) {
-  if (READ_ONLY_BUILTINS.has(name)) return true
-  if (WRITE_BUILTINS.has(name)) return ALLOW_WRITES
-
-  const server = mcpServerOf(name)
-  if (server) {
-    // The HUD, and the interface controls beside it. Both run in this process
-    // and draw on our own screen, so neither is something to withhold —
-    // without them JARVIS has no display at all. They also have to be named
-    // here rather than left to the verb rules below, which read `ui_theme` as
-    // a write and would hold the whole surface back behind ALLOW_WRITES.
-    if (server === 'jarvis' || server === 'jarvis_ui') return true
-
-    // The browser server gates itself, at construction: chromeServer() only
-    // builds the acting tools — click, type, form input, close tab — when
-    // ALLOW_WRITES is set, so anything that reaches here at all is something
-    // the same policy has already permitted. Deciding it a second time by
-    // reading verbs out of the name would only get it wrong: `chrome_navigate`
-    // begins with no read verb and would fall to the write branch, which would
-    // withhold the one tool the whole server is for.
-    if (server === 'jarvis_chrome') return true
-
-    // The camera. Not withheld behind ALLOW_WRITES: looking changes nothing,
-    // and the real gate is the browser's own camera permission plus an
-    // indicator the user can see for as long as it is live.
-    if (server === 'jarvis_eyes') return true
-
-    const tool = mcpToolOf(name)
-    if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
-      return ALLOW_WRITES
-    }
-    // The session tools this bridge is developed inside count as read-only too.
-    if (READ_ONLY_MCP.has(server) || server.startsWith('ccd_session')) return true
-    return READ_VERB.test(tool) ? true : ALLOW_WRITES
-  }
-  return ALLOW_WRITES
 }
 
 const SYSTEM_PROMPT = `You are JARVIS. You are speaking out loud to one person.
@@ -436,7 +247,35 @@ Using tools:
   is read out loud, and a URL becomes "aitch tee tee pee colon slash slash".
   Put the source in the panel as a short tag like "REUTERS" instead.
 - If a tool fails or isn't connected, one plain sentence saying so.
-- If you don't know, say you don't know.`
+- If you don't know, say you don't know.
+
+Your memory:
+- What you know about them, their standing rules and your own notes are below,
+  under their own headings. Use them. Never recite them.
+- \`remember\` writes a fact down for good. Use it when they tell you something
+  worth keeping, or say "remember". Confirm in a few words: "Noted, sir."
+- \`recall\` searches what you wrote down before this conversation.
+
+Jobs and briefings:
+- You run jobs while they are away; the morning brief is one. A finished one is
+  listed under "Waiting for the user".
+- "Brief me", "what do I need to know", "anything new": call \`briefing\`. Speak
+  the headline and whatever needs a decision, then put the whole briefing on a
+  blade with \`display\`.
+- "Run the morning brief": \`run_job\`. It takes a few minutes. Say so once.
+
+Hard work:
+- Anything that needs real reading or careful writing — research across several
+  sources, a comparison, a plan, a draft worth sending — goes to the deep-work
+  agent. Say one short line first, because it takes a while.
+
+Actions that change things:
+- Sending, posting, deleting, clicking or typing on a page, running a command:
+  these wait for the user's approval. A card appears on screen showing exactly
+  what is about to happen, and they answer yes or no.
+- Before calling such a tool, say in one sentence what you are about to do and
+  end with "Shall I?". Then call it. Their answer arrives as the tool's result.
+- After a no, or no answer, do not try again. Say it was not done, in a few words.`
 
 /**
  * ElevenLabs credentials, borrowed from the MCP server config.
@@ -684,7 +523,29 @@ const handleRequest = async (req, res) => {
     // student with nothing configured still has a working assistant.
     const eleven = Boolean(elevenKey())
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven }))
+    return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven, service: SERVICE }))
+  }
+
+  // What the always-on half is doing: the jobs, when they next run, how they
+  // last went, and what is waiting to be read. Titles and times only — the
+  // briefings themselves are read through the agent, not served here.
+  if (req.method === 'GET' && req.url === '/status') {
+    res.writeHead(200, { ...cors, 'content-type': 'application/json' })
+    return res.end(
+      JSON.stringify(
+        {
+          ok: true,
+          service: SERVICE,
+          home: HOME,
+          models: TIERS,
+          writes: ALLOW_WRITES ? 'allowed' : 'policy',
+          jobs: scheduler.status(),
+          unread: unreadBriefings().map(({ id, title, at }) => ({ id, title, at })),
+        },
+        null,
+        2,
+      ),
+    )
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -998,17 +859,94 @@ const wss = new WebSocketServer({
     done(true)
   },
 })
-server.listen(PORT)
 
-console.log(`[jarvis] bridge listening on ws://localhost:${PORT}`)
+// ---------------------------------------------------------------------------
+// The always-on half
+
+/** Set by the launchd service (scripts/service.mjs), so the HUD and the
+ *  launcher can tell a bridge you started from one that is always there. */
+const SERVICE = process.env.JARVIS_SERVICE === '1'
+
+const createdHome = ensureHome()
+
+/** Every open interface, so a job that finishes at seven can tell all of them. */
+const clients = new Set()
+
+const noticesFrame = () => ({
+  type: 'notices',
+  items: unreadBriefings().map(({ id, title, headline, at }) => ({ id, title, headline, at })),
+})
+let noticesSent = ''
+const broadcastNotices = () => {
+  const frame = noticesFrame()
+  noticesSent = frame.items.map((n) => n.id).join()
+  for (const send of clients) send(frame)
+}
+
+// A job run from a terminal (`npm run job`) files its briefing from another
+// process, and nothing here hears about it. Noticing the unread list change is
+// what still puts its chip on every open interface.
+setInterval(() => {
+  const ids = unreadBriefings().map((b) => b.id).join()
+  if (ids !== noticesSent) broadcastNotices()
+}, 15_000).unref()
+
+const scheduler = createScheduler({
+  log: (line) => console.log(line),
+  onFinish: () => broadcastNotices(),
+})
+
+/**
+ * Staying awake for the schedule.
+ *
+ * A sleeping Mac runs nothing, and launchd does not wake it for us. With
+ * JARVIS_STAY_AWAKE=1 — which the service sets — the bridge holds a power
+ * assertion through `caffeinate -s` for as long as it runs: the display still
+ * sleeps, but the machine does not, while it is on mains power. On battery it
+ * sleeps as usual, and a missed job catches up when it wakes. `-w` ties the
+ * assertion to this process, so it can never outlive the bridge.
+ */
+if (process.env.JARVIS_STAY_AWAKE === '1' && process.platform === 'darwin') {
+  spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' }).unref()
+}
+
+server.on('error', (err) => {
+  if (err?.code === 'EADDRINUSE') {
+    console.error(
+      `[jarvis] port ${PORT} is already in use — the always-on core is probably ` +
+        'running already (npm run service:status). Use `npm run dev` for the face alone.',
+    )
+    process.exit(1)
+  }
+  throw err
+})
+
+server.listen(PORT, () => scheduler.start())
+
+console.log(`[jarvis] bridge listening on ws://localhost:${PORT}${SERVICE ? ' (always-on service)' : ''}`)
 console.log(
   `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
 )
-console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
-  `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED' : 'disabled'}` +
-    (ALLOW_WRITES ? '' : ' — set JARVIS_ALLOW_WRITES=1 to permit shell/file/device actions'),
+  `[jarvis] models: voice ${TIERS.voice.model} (${TIERS.voice.effort}) · ` +
+    `deep ${TIERS.deep.model} (${TIERS.deep.effort}) · fast ${TIERS.fast.model}`,
 )
+console.log(
+  `[jarvis] writes ${ALLOW_WRITES ? 'ENABLED without asking (JARVIS_ALLOW_WRITES=1)' : 'ask first'}` +
+    ` · policy in ${HOME}/policy.json`,
+)
+console.log(
+  `[jarvis] memory in ${HOME}` +
+    (createdHome.length ? ` — created ${createdHome.join(', ')}` : ''),
+)
+for (const job of scheduler.status()) {
+  console.log(
+    `[jobs] ${job.name}: ${job.enabled ? `${job.at} on ${job.days.join(' ')} · ${job.model}` : 'paused'}`,
+  )
+}
+if (process.env.JARVIS_STAY_AWAKE === '1' && process.platform === 'darwin') {
+  console.log('[jarvis] keeping the Mac awake on mains power (caffeinate -s)')
+}
 // Asynchronous, so it lands a beat after the rest of the banner. Worth printing
 // at all because an extension that is simply not running is indistinguishable
 // at the tool boundary from one that is broken, and this is the one place the
@@ -1016,7 +954,7 @@ console.log(
 void chromeAvailable().then((ok) => {
   console.log(
     ok
-      ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need JARVIS_ALLOW_WRITES=1)'}`
+      ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (clicking and typing ask first)'}`
       : '[jarvis] browser control unavailable — open Chrome with the Claude extension enabled',
   )
 })
@@ -1039,13 +977,49 @@ const RESULT_FAILURES = {
   default: 'The turn ended without an answer.',
 }
 
+/**
+ * How long a conversation can sit idle and still be picked back up.
+ *
+ * The agent session used to die with the socket, so a reloaded tab or a
+ * restarted bridge meant starting again from nothing. Now the session id is
+ * kept in ~/.jarvis/state.json and the next connection resumes it, as long as
+ * it was last used within this window. Past it, a fresh conversation starts —
+ * what he was told to remember carries over regardless, which is what memory
+ * is for; yesterday's small talk does not need to.
+ */
+const RESUME_MS = Number(process.env.JARVIS_RESUME_HOURS ?? 6) * 3_600_000
+
+/**
+ * Only one connection owns the remembered conversation at a time. A second tab
+ * gets a session of its own rather than two interfaces writing into one
+ * transcript at once.
+ */
+let conversationOwner = null
+
+/** How long an approval card waits for an answer before it counts as a no. */
+const APPROVAL_MS = 90_000
+
 wss.on('connection', (socket) => {
   console.log('[jarvis] client connected')
+
+  const owner = conversationOwner === null
+  if (owner) conversationOwner = socket
+  const previous = owner ? readState().voice : null
+  const resumeId =
+    previous?.sessionId && Date.now() - Date.parse(previous.lastActiveAt ?? 0) < RESUME_MS
+      ? previous.sessionId
+      : null
+  let answered = false
+  if (resumeId) console.log(`[jarvis] resuming conversation ${resumeId.slice(0, 8)}`)
 
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
   socket.send(
-    JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
+    JSON.stringify({
+      type: 'ready',
+      servers: Object.keys(MCP_SERVERS),
+      resumed: Boolean(resumeId),
+    }),
   )
 
   /** Resolves the pending user message into the SDK's input generator. */
@@ -1072,6 +1046,9 @@ wss.on('connection', (socket) => {
   const send = (msg) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg))
   }
+
+  clients.add(send)
+  send(noticesFrame())
 
   /**
    * Which question the agent is currently answering.
@@ -1112,6 +1089,48 @@ wss.on('connection', (socket) => {
       waiting.set(id, { resolve, timer })
       send({ type: kind, id, ...args })
     })
+
+  /**
+   * Asking the user for a yes.
+   *
+   * The same request/reply channel as the camera, for the same reason: the
+   * person is over there and the decision has to come back. A card goes up
+   * showing exactly what is about to run, and the tool waits on it. Anything
+   * other than a clear yes — a no, silence for APPROVAL_MS, a barge-in that
+   * abandons the turn, the tab closing — settles it as a refusal, and the card
+   * is taken down so it can never be answered after the moment has passed.
+   */
+  const approvals = new Map()
+
+  const requestApproval = (toolName, input, signal) =>
+    new Promise((resolve) => {
+      if (socket.readyState !== socket.OPEN) return resolve(false)
+      const id = `q${++asks}`
+      const settle = (approved) => {
+        if (!approvals.delete(id)) return
+        clearTimeout(timer)
+        waiting.delete(id)
+        signal?.removeEventListener?.('abort', onAbort)
+        send({ type: 'approval_closed', id })
+        resolve(approved)
+      }
+      const onAbort = () => settle(false)
+      const timer = setTimeout(() => settle(false), APPROVAL_MS)
+      approvals.set(id, settle)
+      waiting.set(id, { resolve: (reply) => settle(reply?.approved === true), timer })
+      signal?.addEventListener?.('abort', onAbort)
+      send({
+        type: 'approval',
+        id,
+        tool: toolName,
+        ...describeCall(toolName, input),
+        expiresAt: Date.now() + APPROVAL_MS,
+      })
+    })
+
+  const refuseApprovals = () => {
+    for (const settle of [...approvals.values()]) settle(false)
+  }
 
   /**
    * Announcing a tool on the HUD, once, and only if it actually runs.
@@ -1208,18 +1227,28 @@ wss.on('connection', (socket) => {
         // one server; the underscore in it is why decideTool and announceTool
         // both name `jarvis_ui` explicitly.
         jarvis_ui: uiServer((op, args) => send({ type: 'ui', op, args })),
-        // The user's own Chrome, over the extension's native-host socket. It
-        // holds no per-connection state, but it is built here with the rest so
-        // the write gate is read once, at the same point as everything else.
-        jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
+        // The user's own Chrome, over the extension's native-host socket. The
+        // acting tools are always built now; the gate holds them behind an
+        // approval, so a click on a signed-in page is something you saw first.
+        jarvis_chrome: chromeServer({ allowWrites: true }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
+        // Memory, briefings and jobs. Reading a briefing takes its chip down
+        // on every open interface, not just this one.
+        jarvis_memory: memoryServer({ scheduler, onBriefingsRead: broadcastNotices }),
       },
+      // The deep tier, one hand-off away. See models.mjs.
+      agents: AGENTS,
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
       // of input tokens on every turn. Replacing it makes the persona stick,
       // keeps answers short enough to speak, and cuts cost per turn.
-      systemPrompt: SYSTEM_PROMPT,
+      //
+      // What he knows — about-me, rules, remembered facts, today's log, what
+      // is waiting — is read fresh from ~/.jarvis for every connection.
+      systemPrompt: `${SYSTEM_PROMPT}\n\n# What you know\n\n${contextBlock()}`,
+      // Pick the conversation back up if it is recent. See RESUME_MS.
+      ...(resumeId ? { resume: resumeId } : {}),
       // Run from the home directory so project-scoped MCP servers don't shadow
       // the global ones, and so file tools have a sane root.
       cwd: homedir(),
@@ -1244,8 +1273,8 @@ wss.on('connection', (socket) => {
       // Normally your own `/model` preference would decide, but that lives in
       // the settings files `settingSources: []` deliberately stops loading, so
       // without this line nothing in the project has a say at all.
-      model: MODEL,
-      effort: EFFORT,
+      model: TIERS.voice.model,
+      effort: TIERS.voice.effort,
       maxTurns: 24,
       permissionMode: 'default',
       // Without this the SDK only emits whole assistant messages, and JARVIS
@@ -1261,20 +1290,28 @@ wss.on('connection', (socket) => {
       // through a `Bash: echo hello` without asking, and only reaches us for
       // something with a consequence, like a `touch`. So a deny here is
       // reliable; an absence of a call here is not proof nothing ran.
-      canUseTool: async (toolName) => {
-        const ok = decideTool(toolName)
-        console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
-        return ok
-          ? { behavior: 'allow' }
-          : {
-              behavior: 'deny',
-              // Every word of this can end up spoken, so it carries no command
-              // to read out — the persona is forbidden from saying one aloud.
-              message:
-                'Blocked: JARVIS is running in read-only mode and cannot take' +
-                ' actions that change anything. Tell the user this action is' +
-                ' unavailable until they enable write access on the machine.',
-            }
+      //
+      // Reads run. Writes go to the policy: run, refuse, or — by default —
+      // put a card on screen and wait for a yes.
+      canUseTool: async (toolName, input, options) => {
+        const v = verdict(toolName)
+        const ok =
+          v === 'allow' || (v === 'ask' && (await requestApproval(toolName, input, options?.signal)))
+        console.log(
+          `[jarvis] tool ${toolName} -> ${v === 'ask' ? (ok ? 'approved' : 'not approved') : v}`,
+        )
+        if (ok) return { behavior: 'allow' }
+        return {
+          behavior: 'deny',
+          // Every word of this can end up spoken, so it carries no command
+          // to read out — the persona is forbidden from saying one aloud.
+          message:
+            v === 'ask'
+              ? 'Not approved: the user said no, or did not answer in time. Do ' +
+                'not try again. Tell them in a few words that it was not done.'
+              : "Blocked: the user's policy does not allow this action. Tell the " +
+                'user it is unavailable, in one sentence.',
+        }
       },
     },
   })
@@ -1362,6 +1399,12 @@ wss.on('connection', (socket) => {
             // the only place a turn is genuinely over.
             finishTurn?.()
             finishTurn = null
+            answered = true
+            if (owner && msg.session_id) {
+              updateState((s) => {
+                s.voice = { sessionId: msg.session_id, lastActiveAt: new Date().toISOString() }
+              })
+            }
             // One turn's tool ids are never referred to again, and these
             // otherwise grow for as long as the socket is open.
             seenTools.clear()
@@ -1383,6 +1426,15 @@ wss.on('connection', (socket) => {
       }
     } catch (err) {
       console.error('[jarvis] session error:', err)
+      // A conversation that cannot be resumed — its transcript deleted, or
+      // written by a version that can no longer read it — would fail the same
+      // way on every reconnect, for ever. Forget it, so the next one is fresh.
+      if (resumeId && !answered) {
+        console.error('[jarvis] could not resume the last conversation; starting fresh next time')
+        updateState((s) => {
+          delete s.voice
+        })
+      }
       send({ type: 'error', message: String(err?.message ?? err) })
       // The stream is finished either way — nothing will ever be read from it
       // again. Leaving the socket open would leave the client believing it has
@@ -1441,6 +1493,8 @@ wss.on('connection', (socket) => {
     }
 
     if (msg.type === 'interrupt') {
+      // A turn that is being abandoned cannot still be waiting for a yes.
+      refuseApprovals()
       // Held so the next question can wait for it rather than racing it.
       const stopped = turnFinished()
       settling = Promise.resolve(session.interrupt?.())
@@ -1457,6 +1511,9 @@ wss.on('connection', (socket) => {
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
     closed = true
+    clients.delete(send)
+    refuseApprovals()
+    if (conversationOwner === socket) conversationOwner = null
     deliver?.(null)
     session.close?.()
   })

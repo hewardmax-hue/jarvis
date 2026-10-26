@@ -9,11 +9,12 @@ import { BRIDGE_WS_URL } from '../config'
  * brain is behind it. The difference is what's reachable: this one runs on your
  * machine, so every MCP server in your Claude Code config is in play.
  *
- * The socket is the session. The bridge holds one Claude Agent SDK query per
- * connection and the whole conversation lives inside it, so a dropped socket
- * silently wipes JARVIS's memory of the exchange while the transcript on screen
- * still shows it. That is why the reconnect below is loud rather than
- * invisible: `watchConnection` exists so the HUD can say so.
+ * The bridge holds one Claude Agent SDK query per connection, and keeps its
+ * session id on disk so a reconnect within a few hours picks the same
+ * conversation back up. Past that window a reconnect starts fresh, and the
+ * transcript on screen no longer matches what JARVIS remembers — which is why
+ * the reconnect below is loud rather than invisible: `watchConnection` says
+ * which of the two happened.
  */
 
 /** Anything the bridge sends. Deliberately loose — a frame from a future
@@ -35,7 +36,27 @@ type Frame = {
   seconds?: number
   when?: string
   servers?: Array<string | { name?: string }>
+  resumed?: boolean
+  title?: string
+  detail?: string
+  tool?: string
+  expiresAt?: number
+  items?: Notice[]
 }
+
+/** An action waiting for the user's yes — see requestApproval in the bridge. */
+export type ApprovalRequest = {
+  id: string
+  /** "chrome · click", "Bash" */
+  title: string
+  /** Exactly what is about to run: the command, the text, the path. */
+  detail: string
+  tool: string
+  expiresAt: number
+}
+
+/** A briefing a background job has finished and nobody has read yet. */
+export type Notice = { id: string; title: string; headline?: string; at: string }
 
 /** Every question gets an id so its answer can be told from anyone else's. */
 let askSeq = 0
@@ -101,14 +122,40 @@ export function watchUi(fn: (op: string, args: any) => void) {
 }
 
 /**
+ * Asking the user before an action that changes something.
+ *
+ * The bridge holds the tool call open and sends one of these; the app puts a
+ * card up and answers with `answerApproval` once the user says or clicks yes
+ * or no. `close` fires when the bridge withdraws the question — it timed out,
+ * or the turn it belonged to was abandoned — so a card can never be answered
+ * after the moment has passed.
+ */
+let onApproval: { open: (req: ApprovalRequest) => void; close: (id: string) => void } | null = null
+export function watchApprovals(fn: NonNullable<typeof onApproval>) {
+  onApproval = fn
+}
+
+export function answerApproval(id: string, approved: boolean) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'reply', id, approved }))
+  }
+}
+
+/** Unread briefings. Sent whole on connect and whenever the list changes. */
+let onNotices: ((items: Notice[]) => void) | null = null
+export function watchNotices(fn: (items: Notice[]) => void) {
+  onNotices = fn
+}
+
+/**
  * Connection state, for the UI.
  *
  *   'open'        — first connection of the page.
- *   'lost'        — the socket died. The agent session died with it, so
- *                   everything said so far is gone as far as JARVIS knows.
+ *   'lost'        — the socket died, mid-turn work with it.
+ *   'resumed'     — we're back, on the same conversation as before.
  *   'reconnected' — we're back, on a fresh session with no memory of the above.
  */
-export type ConnectionState = 'open' | 'lost' | 'reconnected'
+export type ConnectionState = 'open' | 'lost' | 'resumed' | 'reconnected'
 let onConnection: ((state: ConnectionState) => void) | null = null
 export function watchConnection(fn: (state: ConnectionState) => void) {
   onConnection = fn
@@ -135,6 +182,10 @@ function deferred() {
 let firstReady = deferred()
 
 let everConnected = false
+
+/** A reconnect is announced on its first `ready`, which says whether the
+ *  bridge picked the old conversation back up — not on open, which cannot. */
+let announceReconnect = false
 
 /** Backoff for the automatic re-dial. It gives up after the last delay rather
  *  than retrying forever — a bridge that has been down for half a minute is
@@ -177,6 +228,26 @@ function dispatch(ws: WebSocket) {
         .filter(Boolean)
       onServers?.(servers)
       firstReady.resolve()
+      if (announceReconnect && msg.resumed !== undefined) {
+        announceReconnect = false
+        onConnection?.(msg.resumed ? 'resumed' : 'reconnected')
+      }
+    } else if (msg.type === 'approval' && msg.id) {
+      const req: ApprovalRequest = {
+        id: msg.id,
+        title: msg.title ?? 'Action',
+        detail: msg.detail ?? '',
+        tool: msg.tool ?? '',
+        expiresAt: Number(msg.expiresAt) || Date.now() + 90_000,
+      }
+      // Nobody to ask is a no, said at once — not a turn left hanging until
+      // the bridge's own timeout gives up on it.
+      if (onApproval) onApproval.open(req)
+      else answerApproval(req.id, false)
+    } else if (msg.type === 'approval_closed' && msg.id) {
+      onApproval?.close(msg.id)
+    } else if (msg.type === 'notices') {
+      onNotices?.(Array.isArray(msg.items) ? msg.items : [])
     } else if (msg.type === 'panel' && msg.panel) {
       onPanel?.(msg.panel)
     } else if (msg.type === 'blade' && msg.blade) {
@@ -246,7 +317,8 @@ function connect(): Promise<WebSocket> {
       attempt = 0
       dispatch(ws)
       settle(null)
-      onConnection?.(everConnected ? 'reconnected' : 'open')
+      if (everConnected) announceReconnect = true
+      else onConnection?.('open')
       everConnected = true
     }
     ws.onerror = () => {

@@ -1,0 +1,15 @@
+{
+  "//": "When each job runs, in this Mac's local time. Save and it takes effect within a minute; nothing to restart. 'sop' is a file in sops/. 'tier' picks the model: fast (Haiku), voice (Sonnet) or deep (Opus). 'catchUpHours' runs a job the Mac slept through, if it wakes within that many hours of the time. Set 'enabled' to false to pause a job.",
+  "jobs": [
+    {
+      "name": "morning-brief",
+      "title": "Morning brief",
+      "sop": "morning-brief",
+      "at": "07:00",
+      "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+      "tier": "deep",
+      "catchUpHours": 6,
+      "enabled": true
+    }
+  ]
+}

@@ -16,10 +16,15 @@
     "preview": "vite preview",
     "bridge": "node bridge/server.mjs",
     "bridge:writes": "JARVIS_ALLOW_WRITES=1 node bridge/server.mjs",
+    "job": "node scripts/job.mjs",
+    "service:install": "node scripts/service.mjs install",
+    "service:status": "node scripts/service.mjs status",
+    "service:logs": "node scripts/service.mjs logs",
+    "service:uninstall": "node scripts/service.mjs uninstall",
     "setup": "node scripts/setup.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.296",
     "@anthropic-ai/sdk": "^0.115.0",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@picovoice/porcupine-web": "^4.0.1",

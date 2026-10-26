@@ -113,8 +113,32 @@ if (port) {
 
 vendorWasm()
 
-console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
-run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
+/**
+ * Whether the brain is already up — normally the always-on service
+ * (`npm run service:install`). Starting a second one would only fail on the
+ * port, so in that case this launcher brings up the face alone.
+ */
+async function coreRunning() {
+  const bridgePort = process.env.JARVIS_BRIDGE_PORT ?? '8787'
+  try {
+    const res = await fetch(`http://localhost:${bridgePort}/health`, {
+      signal: AbortSignal.timeout(800),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+if (await coreRunning()) {
+  console.log('\nJ.A.R.V.I.S. — the brain is already running (always-on core); starting the face.\n')
+  if (writes) {
+    console.log('  --writes has no effect on a core that is already running.\n')
+  }
+} else {
+  console.log('\nJ.A.R.V.I.S. starting — the brain and the face.\n')
+  run('bridge', 'node', ['bridge/server.mjs'], '36', bridgeEnv)
+}
 // npm is a shell script on most systems; call the vite binary directly so we do
 // not need shell:true (which would break the argument handling above).
 run('face', process.execPath, ['node_modules/vite/bin/vite.js'], '35', {})

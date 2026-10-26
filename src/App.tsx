@@ -25,10 +25,13 @@ import {
   watchCapture,
   watchUi,
   watchConnection,
+  watchApprovals,
+  watchNotices,
   connectedLabels,
   usingBridge,
   type Msg,
 } from './lib/brain'
+import { answerFromSpeech, decide } from './lib/approval'
 import { startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { env } from './config'
@@ -82,6 +85,8 @@ export default function App() {
    * the phase, the speaker, or the busy state on its way to the floor.
    */
   const turn = useRef(0)
+  /** Briefings already mentioned on waking, so each is announced once. */
+  const announced = useRef(new Set<string>())
   const booting = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -99,6 +104,8 @@ export default function App() {
   }
 
   const goDormant = () => {
+    // Standing down is not a yes. Whatever was waiting on one is refused.
+    decide(false)
     clearIdle()
     silence()
     turn.current++
@@ -222,7 +229,13 @@ export default function App() {
 
   /** What the voice loop should do with what it hears, derived from phase. */
   const mode = (): VoiceMode => {
-    switch (store.getState().phase) {
+    const s = store.getState()
+    // He has asked a yes-or-no question and the turn is held open on it, so
+    // what comes next is an answer to be heard, not an interruption to obey.
+    if (s.approval && s.phase !== 'offline' && s.phase !== 'boot' && s.phase !== 'dormant') {
+      return 'command'
+    }
+    switch (s.phase) {
       case 'offline':
       case 'boot':
         return 'deaf'
@@ -255,9 +268,14 @@ export default function App() {
     // Answer to his name. Deliberately NOT awaited any more: the microphone is
     // already open and the echo filter knows his voice, so the user can talk
     // straight over the greeting instead of waiting it out.
+    //
+    // A briefing finished while they were away replaces the greeting, once —
+    // the first thing worth saying is that something is waiting.
+    const fresh = store.getState().notices.find((n) => !announced.current.has(n.id))
+    if (fresh) announced.current.add(fresh.id)
     const greeting = createSpeaker()
     speaker.current = greeting
-    greeting.say(attention())
+    greeting.say(fresh ? `Sir, your ${fresh.title.toLowerCase()} is ready.` : attention())
     void greeting.end()
 
     listen(AWAIT_SPEECH_MS)
@@ -271,6 +289,9 @@ export default function App() {
     clearIdle()
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
+    // Talking while a card is up is answering it. Cutting him off here would
+    // abandon the very turn that is waiting for the answer.
+    if (store.getState().approval) return
 
     const wasBusy =
       phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
@@ -292,6 +313,19 @@ export default function App() {
   const onUtterance = (text: string) => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
+
+    // A card is up: this is its answer. Anything that is neither yes nor no is
+    // a change of mind — the action is refused and what they said becomes the
+    // next request, exactly as if they had interrupted.
+    if (store.getState().approval) {
+      if (BARE_NAME.test(text)) return
+      const answer = answerFromSpeech(text.replace(LEADING_NAME, ''))
+      if (answer !== null) {
+        decide(answer)
+        return
+      }
+      decide(false)
+    }
 
     // People keep using his name as a vocative once they're already talking to
     // him. Strip it rather than sending "jarvis" to the model as a question.
@@ -449,16 +483,42 @@ export default function App() {
           console.warn('[jarvis] unknown ui op:', op, args)
       }
     })
-    // In bridge mode the conversation lives in the agent session, which is tied
-    // to the socket — so a drop silently wipes his memory while the transcript
-    // on screen still shows it. Better to say so than to let him quietly forget.
+    // In bridge mode the conversation lives in the agent session. A reconnect
+    // within a few hours resumes it; after that it starts fresh while the
+    // transcript on screen still shows the old one. Say which, rather than let
+    // him quietly forget.
     watchConnection((state) => {
       if (state === 'lost') {
+        decide(false)
         store.getState().setError('Bridge connection lost — reconnecting.')
+      } else if (state === 'resumed') {
+        store.getState().setError(null)
       } else if (state === 'reconnected') {
         store
           .getState()
           .setError('Bridge reconnected. The previous conversation was not kept.')
+      }
+    })
+
+    // An action held for a yes. The card is the question; the bridge holds the
+    // turn open until it is answered, refused, or withdrawn.
+    watchApprovals({
+      open: (req) => {
+        store.getState().setApproval(req)
+        sfx.play('wake')
+      },
+      close: (id) => {
+        if (store.getState().approval?.id === id) store.getState().setApproval(null)
+      },
+    })
+
+    // Briefings that finished while nobody was looking. A new one chimes;
+    // the list itself is the bridge's to keep, so this only mirrors it.
+    watchNotices((items) => {
+      const known = new Set(store.getState().notices.map((n) => n.id))
+      store.getState().setNotices(items)
+      if (items.some((n) => !known.has(n.id)) && store.getState().phase !== 'boot') {
+        sfx.play('done')
       }
     })
     const warming = warm().catch((err: Error) => s.setError(err.message))
@@ -579,6 +639,21 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
+
+      // Y and N answer an approval card. Only while one is up — the rest of
+      // the time neither key means anything.
+      if (
+        store.getState().approval &&
+        (e.key === 'y' || e.key === 'n') &&
+        !e.repeat &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault()
+        decide(e.key === 'y')
+        return
+      }
 
       // V auditions the next British voice installed on this machine. Which
       // ones exist varies per Mac, so hearing them beats trusting a ranking.
