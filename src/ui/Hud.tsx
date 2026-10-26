@@ -7,11 +7,12 @@ import { Effects } from './Effects'
 import { Pointer } from './Pointer'
 import { GestureGuide } from './GestureGuide'
 import { decide } from '../lib/approval'
+import { PUSH_TO_TALK } from '../config'
 
 const statusText: Record<Phase, string> = {
   offline: 'OFFLINE',
   boot: 'INITIALISING',
-  dormant: 'STANDBY — SAY “HEY JARVIS”',
+  dormant: PUSH_TO_TALK ? 'STANDBY — HOLD ⌥ OPTION TO TALK' : 'STANDBY — SAY “HEY JARVIS”',
   waking: 'ONLINE',
   listening: 'LISTENING',
   thinking: 'PROCESSING',
@@ -197,7 +198,9 @@ function ApprovalCard() {
             <button type="button" className="approval-btn approval-no" onClick={() => decide(false)}>
               deny <kbd>N</kbd>
             </button>
-            <span className="approval-hint">or say “yes” / “no”</span>
+            <span className="approval-hint">
+              {PUSH_TO_TALK ? 'or hold ⌥ and say “yes” / “no”' : 'or say “yes” / “no”'}
+            </span>
           </div>
         </motion.div>
       )}
@@ -227,7 +230,7 @@ function NoticeChip() {
             {latest.title} ready
             {notices.length > 1 ? ` · +${notices.length - 1}` : ''}
           </span>
-          <span className="notice-say">say “brief me”</span>
+          <span className="notice-say">{PUSH_TO_TALK ? 'hold ⌥, say “brief me”' : 'say “brief me”'}</span>
         </motion.div>
       )}
     </AnimatePresence>
@@ -404,7 +407,15 @@ export function Hud() {
 
       <footer className="hud-bottom">
         <span className="hint">
-          say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+          {PUSH_TO_TALK ? (
+            <>
+              hold <kbd>⌥ option</kbd> to talk · <kbd>G</kbd> hands
+            </>
+          ) : (
+            <>
+              say <b>“hey jarvis”</b> · <kbd>Space</kbd> to talk · <kbd>G</kbd> hands
+            </>
+          )}
           {voice && (
             <>
               {' · '}
