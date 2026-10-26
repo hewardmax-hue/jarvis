@@ -246,8 +246,20 @@ npm run service:uninstall
 ```
 
 The service runs this folder's code, so restart it after pulling changes
-(`npm run service:install` again does that). `--no-stay-awake` on install
-skips the power assertion.
+(`npm run service:install` again does that — it rebuilds the interface too).
+`--no-stay-awake` on install skips the power assertion.
+
+### Open it as an app
+
+The core also serves the interface itself, at **http://localhost:4180**, so it
+is there whenever the service is — no terminal, no `npm start`. Open that
+address in Chrome and click **Install J.A.R.V.I.S.** in the address bar (or
+⋮ → Cast, save and share → Install page as app). It becomes an app with the
+arc-reactor icon, in its own window, in the Dock and Launchpad. Allow the
+microphone once in that window and it is remembered.
+
+`npm start` is still there for working on the interface: it runs the live dev
+server on 5173 with instant reloads, against the same always-on brain.
 
 ### What he knows — `~/.jarvis`
 
@@ -336,6 +348,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_MODEL_DEEP` | `claude-opus-5-5` | Deep tier: the brief, the `deep-work` agent |
 | `JARVIS_EFFORT_DEEP` | `high` | Deep tier effort |
 | `JARVIS_MODEL_FAST` | `claude-haiku-5-5` | Fast tier |
+| `JARVIS_APP_PORT` | `4180` | Where the core serves the built interface (keep it in 4173-4199) |
 | `JARVIS_HOME` | `~/.jarvis` | Where memory, procedures and schedules live |
 | `JARVIS_RESUME_HOURS` | `6` | How long a conversation can idle and still resume |
 | `JARVIS_STAY_AWAKE` | service: `1` | Hold the Mac awake on mains power |

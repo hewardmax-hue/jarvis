@@ -131,7 +131,8 @@ async function coreRunning() {
 }
 
 if (await coreRunning()) {
-  console.log('\nJ.A.R.V.I.S. — the brain is already running (always-on core); starting the face.\n')
+  console.log('\nJ.A.R.V.I.S. — the brain is already running (always-on core); starting the face.')
+  console.log('  The installed interface is always at http://localhost:4180; this dev server is for editing it.\n')
   if (writes) {
     console.log('  --writes has no effect on a core that is already running.\n')
   }

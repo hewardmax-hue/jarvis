@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="75%">
+      <stop offset="0" stop-color="#0c3240"/><stop offset=".55" stop-color="#04141c"/><stop offset="1" stop-color="#01060c"/>
+    </radialGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffffff"/><stop offset=".3" stop-color="#b8f8ff"/><stop offset=".65" stop-color="#00e5ff" stop-opacity=".55"/><stop offset="1" stop-color="#00e5ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="9"/></filter>
+  </defs>
+  <rect x="50" y="50" width="412" height="412" rx="92" fill="url(#bg)"/>
+  <rect x="51" y="51" width="410" height="410" rx="91" fill="none" stroke="#00e5ff" stroke-opacity=".18" stroke-width="2"/>
+  <g transform="translate(256 256) scale(.98) translate(-256 -256)">
+  <circle cx="256" cy="256" r="178" fill="none" stroke="#00e5ff" stroke-opacity=".22" stroke-width="2"/>
+  <g filter="url(#soft)" opacity=".85">
+    <circle cx="256" cy="256" r="150" fill="none" stroke="#00e5ff" stroke-width="18" stroke-dasharray="69.54 9" transform="rotate(-90 256 256)"/>
+  </g>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#7ff4ff" stroke-width="14" stroke-dasharray="69.54 9" transform="rotate(-90 256 256)"/>
+  <circle cx="256" cy="256" r="120" fill="none" stroke="#00e5ff" stroke-opacity=".55" stroke-width="3"/>
+  <circle cx="256" cy="256" r="104" fill="url(#core)" opacity=".55"/>
+  <polygon points="256.0,340.0 183.3,214.0 328.7,214.0" fill="none" stroke="#00e5ff" stroke-width="22" stroke-linejoin="round" filter="url(#soft)" opacity=".9"/>
+  <polygon points="256.0,340.0 183.3,214.0 328.7,214.0" fill="none" stroke="#d9fcff" stroke-width="10" stroke-linejoin="round"/>
+  <circle cx="256" cy="256" r="46" fill="url(#core)"/>
+  <circle cx="256" cy="256" r="16" fill="#ffffff"/></g>
+</svg>

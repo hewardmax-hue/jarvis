@@ -1,7 +1,7 @@
 /**
  * The always-on core: the bridge as a macOS launchd agent.
  *
- *   npm run service:install     start it now and at every login
+ *   npm run service:install     build the interface, start it now and at every login
  *   npm run service:status      is it running, and what is scheduled
  *   npm run service:logs        the last of its output (-- --follow to tail)
  *   npm run service:uninstall   stop it and remove it
@@ -18,7 +18,7 @@
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { homedir, userInfo } from 'node:os'
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -61,6 +61,8 @@ async function install() {
   mkdirSync(LOGS, { recursive: true })
   mkdirSync(dirname(PLIST), { recursive: true })
 
+  buildInterface()
+
   // Only configuration travels into the plist. Secrets do not: the file sits
   // in ~/Library/LaunchAgents, readable by anything running as you. The
   // ElevenLabs key is picked up from ~/.claude.json, as it is for the bridge.
@@ -89,12 +91,25 @@ async function install() {
   }))
 
   // Replace rather than stack: bootout whatever was loaded before, quietly.
+  //
+  // bootout returns before the old process has gone, and bootstrapping over a
+  // service that is still on its way out fails with "5: Input/output error" —
+  // which is exactly what a reinstall, the way to pick up an update, does. So
+  // wait for launchd to forget it, and give bootstrap a few tries besides.
   spawnSync('launchctl', ['bootout', `${DOMAIN}/${LABEL}`], { stdio: 'ignore' })
-  try {
-    execFileSync('launchctl', ['bootstrap', DOMAIN, PLIST], { stdio: 'pipe' })
-  } catch (err) {
-    console.error(`launchctl refused the service: ${String(err.stderr || err.message).trim()}`)
-    process.exit(1)
+  for (let i = 0; i < 20 && loaded(); i++) await sleep(250)
+  for (let attempt = 1; ; attempt++) {
+    try {
+      execFileSync('launchctl', ['bootstrap', DOMAIN, PLIST], { stdio: 'pipe' })
+      break
+    } catch (err) {
+      if (attempt < 5) {
+        await sleep(1000)
+        continue
+      }
+      console.error(`launchctl refused the service: ${String(err.stderr || err.message).trim()}`)
+      process.exit(1)
+    }
   }
 
   process.stdout.write('Starting the always-on core')
@@ -140,6 +155,7 @@ async function status() {
     return
   }
   console.log(`Bridge:  answering on port ${PORT}${s.service ? '' : ' (from a terminal, not the service)'}`)
+  console.log(`App:     ${s.app ?? 'not built — `npm run service:install` builds it'}`)
   console.log(`Models:  voice ${s.models.voice.model} · deep ${s.models.deep.model} · fast ${s.models.fast.model}`)
   console.log(`Memory:  ${s.home}`)
   for (const job of s.jobs) {
@@ -165,6 +181,45 @@ async function logs() {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Build the face the core serves at http://localhost:4180, so the app icon
+ * opens what this folder holds today. Run on every install — which is also
+ * how an update is picked up.
+ *
+ * The hand-tracking runtime is copied out of node_modules first, as
+ * `npm start` does, because the build only takes what is in public/.
+ */
+function buildInterface() {
+  const wasmFrom = join(ROOT, 'node_modules', '@mediapipe', 'tasks-vision', 'wasm')
+  const wasmTo = join(ROOT, 'public', 'mediapipe')
+  if (existsSync(wasmFrom) && !existsSync(join(wasmTo, 'vision_wasm_internal.wasm'))) {
+    cpSync(wasmFrom, wasmTo, { recursive: true })
+  }
+
+  process.stdout.write('Building the interface… ')
+  const built = spawnSync(
+    process.execPath,
+    [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--logLevel', 'error'],
+    { cwd: ROOT, encoding: 'utf8' },
+  )
+  if (built.status !== 0) {
+    console.error(`failed.\n${built.stderr || built.stdout}`)
+    process.exit(1)
+  }
+  console.log('done.')
+}
+
+// Declarations rather than consts: the command at the top runs before the
+// module body below it has been evaluated.
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/** Whether launchd still knows the service. */
+function loaded() {
+  return spawnSync('launchctl', ['print', `${DOMAIN}/${LABEL}`], { stdio: 'ignore' }).status === 0
+}
 
 async function probe(path) {
   try {

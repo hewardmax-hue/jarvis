@@ -35,9 +35,10 @@ import {
 } from './home.mjs'
 import { spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
-import { readFileSync, realpathSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 
@@ -536,6 +537,7 @@ const handleRequest = async (req, res) => {
         {
           ok: true,
           service: SERVICE,
+          app: appBuilt ? APP_URL : null,
           home: HOME,
           models: TIERS,
           writes: ALLOW_WRITES ? 'allowed' : 'policy',
@@ -923,7 +925,108 @@ server.on('error', (err) => {
 
 server.listen(PORT, () => scheduler.start())
 
+// ---------------------------------------------------------------------------
+// The interface, served by the core itself
+
+/**
+ * Where the built face lives, and where it is served.
+ *
+ * With the core always running, the interface should be too: an app icon that
+ * opens a dead page because nobody ran `npm start` after a reboot is not an
+ * app. So the core serves `dist/` — what `vite build` produced, which
+ * `npm run service:install` refreshes — on a port of its own.
+ *
+ * Its own port, not the bridge's. The bridge's origin also serves proxied web
+ * pages (/page), and the agent socket trusts origins, so the app must never
+ * share one with a stranger's article. 4180 sits inside the range the socket
+ * already accepts, so nothing about what it trusts has to widen. Loopback
+ * only: these are static files, but there is no reason to offer them to the
+ * rest of the network.
+ */
+const APP_PORT = Number(process.env.JARVIS_APP_PORT ?? 4180)
+const APP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
+const APP_URL = `http://localhost:${APP_PORT}`
+
+const APP_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
+  // Without the right type the browser refuses to compile WASM as it streams,
+  // and hand tracking and the speech models start slowly or not at all.
+  '.wasm': 'application/wasm',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.mp3': 'audio/mpeg',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+}
+
+async function serveApp(req, res) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405)
+    return res.end()
+  }
+  let path
+  try {
+    path = decodeURIComponent(new URL(req.url, 'http://x').pathname)
+  } catch {
+    res.writeHead(400)
+    return res.end()
+  }
+  let file = resolvePath(APP_ROOT, `.${path}`)
+  const rel = relative(APP_ROOT, file)
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    res.writeHead(403)
+    return res.end()
+  }
+  let info = await stat(file).catch(() => null)
+  if (info?.isDirectory()) {
+    file = join(file, 'index.html')
+    info = await stat(file).catch(() => null)
+  }
+  if (!info?.isFile()) {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+    return res.end('not found')
+  }
+  res.writeHead(200, {
+    'content-type': APP_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-length': info.size,
+    'x-content-type-options': 'nosniff',
+    // Hashed bundles never change under the same name; everything else — the
+    // page, the manifest, the icons — is re-checked so a rebuild shows up.
+    'cache-control': rel.startsWith('assets') ? 'public, max-age=31536000, immutable' : 'no-cache',
+  })
+  if (req.method === 'HEAD') return res.end()
+  createReadStream(file).pipe(res)
+}
+
+const appBuilt = existsSync(join(APP_ROOT, 'index.html'))
+if (appBuilt) {
+  // Both loopback addresses: Chrome may resolve "localhost" to either.
+  for (const host of ['127.0.0.1', '::1']) {
+    const app = http.createServer((req, res) => {
+      serveApp(req, res).catch(() => {
+        if (!res.headersSent) res.writeHead(500)
+        res.end()
+      })
+    })
+    app.on('error', (err) => {
+      console.error(`[jarvis] could not serve the interface on ${host}:${APP_PORT} — ${err.message}`)
+    })
+    app.listen(APP_PORT, host)
+  }
+}
+
 console.log(`[jarvis] bridge listening on ws://localhost:${PORT}${SERVICE ? ' (always-on service)' : ''}`)
+console.log(
+  appBuilt
+    ? `[jarvis] interface at ${APP_URL}`
+    : '[jarvis] interface not built — `npm run build`, or `npm run service:install`, to serve it from here',
+)
 console.log(
   `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
 )
