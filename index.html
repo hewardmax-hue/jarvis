@@ -63,6 +63,18 @@
     />
 
     <title>J.A.R.V.I.S.</title>
+
+    <!--
+      What makes it installable as an app: Chrome offers "Install J.A.R.V.I.S."
+      for a page with a manifest like this one, and the result opens in its own
+      window with its own icon in the Dock. Install it from the always-on
+      interface at localhost:4180, which the core serves whether or not a
+      terminal is open, rather than from the dev server.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="JARVIS" />
   </head>
   <body>
     <div id="root"></div>
