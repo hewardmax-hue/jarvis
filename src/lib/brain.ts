@@ -105,6 +105,16 @@ export function watchBrain(fn: (e: bridge.BrainEvent) => void): void {
   if (usingBridge) bridge.watchBrain(fn)
 }
 
+export type { HelperEvent } from './bridge'
+
+export function watchHelper(fn: (e: bridge.HelperEvent) => void): void {
+  if (usingBridge) bridge.watchHelper(fn)
+}
+
+export function sendPhase(phase: string): void {
+  if (usingBridge) bridge.sendPhase(phase)
+}
+
 export function setTier(tier: string): void {
   if (usingBridge) bridge.setTier(tier)
 }

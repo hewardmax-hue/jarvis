@@ -1,7 +1,8 @@
 /**
  * The always-on core: the bridge as a macOS launchd agent.
  *
- *   npm run service:install     build the interface, start it now and at every login
+ *   npm run service:install     build the interface and the menu-bar helper, start
+ *                               both now and at every login (--no-helper to skip it)
  *   npm run service:status      is it running, and what is scheduled
  *   npm run service:logs        the last of its output (-- --follow to tail)
  *   npm run service:uninstall   stop it and remove it
@@ -22,6 +23,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync 
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HOME, migrateHome } from '../bridge/home.mjs'
+import { HELPER_APP, buildHelper, helperRunning, removeHelper, startHelper } from './helper.mjs'
 
 const LABEL = 'com.emrys.core'
 /** The service's name when he was called JARVIS. Replaced on install. */
@@ -130,7 +132,9 @@ async function install() {
   for (let i = 0; i < 30; i++) {
     const h = await probe('/health')
     if (h?.service) {
-      console.log(' — running.\n')
+      console.log(' — running.')
+      await installHelper()
+      console.log('')
       return status()
     }
     process.stdout.write('.')
@@ -141,7 +145,30 @@ async function install() {
   process.exit(1)
 }
 
+/**
+ * The menu-bar helper: ⌥ to talk from any app. Optional — Emrys works without
+ * it, so a failure here is reported and the install carries on.
+ */
+async function installHelper() {
+  if (process.argv.includes('--no-helper')) return
+  try {
+    process.stdout.write('Menu-bar helper… ')
+    const rebuilt = buildHelper()
+    await startHelper(plist)
+    console.log(rebuilt ? `built and running (${HELPER_APP}).` : 'running.')
+    if (rebuilt) {
+      console.log(
+        '  First run: allow the microphone and speech recognition when asked, then use its\n' +
+          '  menu-bar dot → "Allow the ⌥ key…" to grant Accessibility, so ⌥ works in every app.',
+      )
+    }
+  } catch (err) {
+    console.log(`not installed — ${err.message}`)
+  }
+}
+
 async function uninstall() {
+  removeHelper()
   const out = spawnSync('launchctl', ['bootout', `${DOMAIN}/${LABEL}`], { encoding: 'utf8' })
   const removed = existsSync(PLIST)
   if (removed) unlinkSync(PLIST)
@@ -172,6 +199,14 @@ async function status() {
   console.log(`App:     ${s.app ?? 'not built — `npm run service:install` builds it'}`)
   console.log(`Models:  voice ${s.models.voice.model} · deep ${s.models.deep.model} · fast ${s.models.fast.model}`)
   console.log(`Memory:  ${s.home}`)
+  const h = s.helper
+  console.log(
+    `Helper:  ${
+      !h?.connected
+        ? helperRunning() ? 'running, not connected yet' : 'not running'
+        : h.ready ? 'ready — ⌥ works from any app' : `running, waiting on ${h.missing.join(', ')}`
+    }`,
+  )
   if (s.brain) {
     console.log(
       `Brain:   ${s.brain.items} items, ${s.brain.digested} summarised` +

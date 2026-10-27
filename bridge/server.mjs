@@ -40,7 +40,8 @@ import {
 } from './home.mjs'
 import { spawn } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
-import { createReadStream, existsSync, readFileSync, realpathSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -523,6 +524,7 @@ const handleRequest = async (req, res) => {
           unread: unreadBriefings().map(({ id, title, at }) => ({ id, title, at })),
           brain: brain.status(),
           voice: voice.status(),
+          helper: helperFrame(),
         },
         null,
         2,
@@ -827,6 +829,13 @@ const wss = new WebSocketServer({
   // 403 would look like the bridge simply isn't running.
   verifyClient: ({ origin, req }, done) => {
     const path = (req.url ?? '/').split('?')[0]
+    // The menu-bar helper: no Origin of its own to show, so it proves itself
+    // with the token in ~/.emrys/helper.json instead — and only from this Mac.
+    if (path === '/helper') {
+      const ok = helperTokenOk(new URL(req.url, 'http://x').searchParams.get('token')) && isLoopback(req)
+      if (!ok) console.warn('[emrys] rejected a helper connection without a valid token')
+      return ok ? done(true) : done(false, 403, 'Forbidden')
+    }
     if (path !== '/' && path !== '/ws') {
       console.warn(`[emrys] rejected websocket on path ${path}`)
       return done(false, 403, 'Forbidden')
@@ -853,6 +862,98 @@ const createdHome = ensureHome()
 
 /** Every open interface, so a job that finishes at seven can tell all of them. */
 const clients = new Set()
+
+// ---------------------------------------------------------------------------
+// The menu-bar helper (helper/EmrysHelper.swift)
+//
+// It hears ⌥ in any app and does its own listening, then passes the words
+// here; they go on to the interface that owns the conversation, which answers
+// as if they had been typed. In return it is told what Emrys is doing, for its
+// menu-bar orb. A fresh token is written at every start, readable only by this
+// user, and is the helper's only way in.
+
+const HELPER_FILE = join(HOME, 'helper.json')
+const helperToken = randomBytes(24).toString('hex')
+try {
+  writeFileSync(HELPER_FILE, JSON.stringify({ port: PORT, token: helperToken }) + '\n', { mode: 0o600 })
+} catch (err) {
+  console.error(`[emrys] could not write ${HELPER_FILE}: ${err.message}`)
+}
+
+function helperTokenOk(given) {
+  if (typeof given !== 'string' || given.length !== helperToken.length) return false
+  return timingSafeEqual(Buffer.from(given), Buffer.from(helperToken))
+}
+
+function isLoopback(req) {
+  const a = req.socket?.remoteAddress ?? ''
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
+}
+
+const helpers = new Set()
+/** What the helper last said it can do: ready when it can hear ⌥ and listen. */
+let helperStatus = { ready: false, missing: [] }
+/** What the interface last said it was doing, for the helper's orb. */
+let appPhase = 'offline'
+/** The interface that owns the conversation — where spoken words are delivered. */
+let ownerSend = null
+
+const helperState = () => ({ type: 'state', phase: appPhase, apps: clients.size })
+const tellHelpers = () => {
+  const state = helperState()
+  for (const h of helpers) h(state)
+}
+const helperFrame = () => ({
+  type: 'helper',
+  connected: helpers.size > 0,
+  ready: helpers.size > 0 && helperStatus.ready,
+  missing: helpers.size > 0 ? helperStatus.missing : [],
+})
+const tellAppsAboutHelper = () => {
+  const frame = helperFrame()
+  for (const send of clients) send(frame)
+}
+/** To the owner if there is one, otherwise the interface opened most recently. */
+const toApp = (msg) => (ownerSend ?? [...clients].at(-1))?.(msg)
+
+function handleHelper(socket) {
+  const send = (msg) => {
+    if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg))
+  }
+  helpers.add(send)
+  console.log('[emrys] menu-bar helper connected')
+  send(helperState())
+  tellAppsAboutHelper()
+
+  socket.on('message', (raw) => {
+    let msg
+    try {
+      msg = JSON.parse(raw.toString())
+    } catch {
+      return
+    }
+    if (msg.type === 'talk') {
+      toApp({ type: 'helper_talk', down: msg.down === true, cancelled: msg.cancelled === true })
+    } else if (msg.type === 'heard' && typeof msg.text === 'string') {
+      toApp({ type: 'helper_heard', text: msg.text.slice(0, 4000), final: msg.final === true })
+    } else if (msg.type === 'status') {
+      helperStatus = {
+        ready: msg.ready === true,
+        missing: Array.isArray(msg.missing) ? msg.missing.filter((m) => typeof m === 'string').slice(0, 6) : [],
+      }
+      console.log(
+        `[emrys] menu-bar helper ${helperStatus.ready ? 'ready' : `waiting on ${helperStatus.missing.join(', ') || 'permissions'}`}`,
+      )
+      tellAppsAboutHelper()
+    }
+  })
+  socket.on('close', () => {
+    helpers.delete(send)
+    if (!helpers.size) helperStatus = { ready: false, missing: [] }
+    console.log('[emrys] menu-bar helper disconnected')
+    tellAppsAboutHelper()
+  })
+}
 
 const noticesFrame = () => ({
   type: 'notices',
@@ -1110,7 +1211,9 @@ const ROTATE_AT = Number(process.env.EMRYS_ROTATE_TOKENS ?? 60_000)
 /** How long an approval card waits for an answer before it counts as a no. */
 const APPROVAL_MS = 90_000
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, req) => {
+  if ((req?.url ?? '/').split('?')[0] === '/helper') return handleHelper(socket)
+
   console.log('[emrys] client connected')
 
   const owner = conversationOwner === null
@@ -1187,6 +1290,9 @@ wss.on('connection', (socket) => {
   }
 
   clients.add(send)
+  if (owner) ownerSend = send
+  send(helperFrame())
+  tellHelpers()
   send(noticesFrame())
 
   /**
@@ -1789,6 +1895,14 @@ wss.on('connection', (socket) => {
       }
     }
 
+    if (msg.type === 'phase' && typeof msg.phase === 'string') {
+      // The helper's orb follows the conversation's owner, or the only window.
+      if (owner || clients.size === 1) {
+        appPhase = msg.phase.slice(0, 20)
+        tellHelpers()
+      }
+    }
+
     if (msg.type === 'model' && typeof msg.tier === 'string') {
       void switchModel(msg.tier)
     }
@@ -1813,6 +1927,9 @@ wss.on('connection', (socket) => {
     console.log('[emrys] client disconnected')
     closed = true
     clients.delete(send)
+    if (ownerSend === send) ownerSend = null
+    if (!clients.size) appPhase = 'offline'
+    tellHelpers()
     refuseApprovals()
     if (conversationOwner === socket) conversationOwner = null
     feed?.deliver?.(null)

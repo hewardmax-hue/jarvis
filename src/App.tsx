@@ -30,6 +30,8 @@ import {
   watchApprovals,
   watchNotices,
   watchBrain,
+  watchHelper,
+  sendPhase,
   connectedLabels,
   usingBridge,
   type Msg,
@@ -321,6 +323,54 @@ export default function App() {
 
   const holding = useRef(false)
 
+  // -- the menu-bar helper --------------------------------------------------
+
+  /**
+   * ⌥ held in any app, via the menu-bar helper. It does its own listening, so
+   * this only has to do what the key itself would: stop him, show that he is
+   * listening, and take the words as a turn when they arrive.
+   */
+  const helperWait = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const helperTalk = (down: boolean, cancelled: boolean) => {
+    const s = store.getState()
+    if (s.phase === 'offline' || s.phase === 'boot') return
+    if (helperWait.current) clearTimeout(helperWait.current)
+    helperWait.current = null
+    if (down) {
+      s.setError(null)
+      clearIdle()
+      if (!s.approval) {
+        if (s.phase === 'thinking' || s.phase === 'tooling' || s.phase === 'speaking') cutOff()
+        else silence()
+        s.setCaption('')
+        s.setPhase('listening')
+      }
+      sfx.play('listen')
+      return
+    }
+    // A shortcut, not speech: back to rest without a turn.
+    if (cancelled) {
+      if (!s.approval && s.phase === 'listening') standBy()
+      return
+    }
+    // Let go: the words are on their way. Never wait on them for ever.
+    helperWait.current = setTimeout(() => {
+      if (store.getState().phase === 'listening' && !store.getState().approval) standBy()
+    }, 4000)
+  }
+
+  const helperHeard = (text: string, final: boolean) => {
+    if (!final) {
+      store.getState().setCaption(text)
+      return
+    }
+    if (helperWait.current) clearTimeout(helperWait.current)
+    helperWait.current = null
+    if (text.trim()) onUtterance(text)
+    else if (!store.getState().approval && store.getState().phase === 'listening') standBy()
+  }
+
   const pressTalk = () => {
     const s = store.getState()
     if (!voice.current || holding.current) return
@@ -478,6 +528,16 @@ export default function App() {
       if (items.some((n) => !known.has(n.id))) sfx.play('done')
     })
 
+    watchHelper((e) => {
+      if (e.type === 'presence') {
+        // Only a helper that can actually hear ⌥ takes the key over from this
+        // window. One still waiting on permissions leaves it here.
+        store.getState().setHelper(e.ready, e.connected ? e.missing : [])
+        if (e.connected) sendPhase(store.getState().phase)
+      } else if (e.type === 'talk') helperTalk(e.down, e.cancelled)
+      else helperHeard(e.text, e.final)
+    })
+
     // The second brain talking to the interface.
     let graphTimer = 0
     watchBrain((e) => {
@@ -543,6 +603,17 @@ export default function App() {
 
     screen.watchScreen((on) => store.getState().setSharing(on))
 
+    // What he is doing, for the menu-bar orb.
+    const unphase = useStore.subscribe((st, prev) => {
+      if (st.phase !== prev.phase) sendPhase(st.phase)
+    })
+
+    // Speech needs the window to have been clicked or typed in once since it
+    // opened. Talking through the helper is not that, so say it plainly.
+    const onBlocked = () =>
+      store.getState().setError('Click anywhere in Emrys once so he can speak out loud.')
+    window.addEventListener('emrys-autoplay-blocked', onBlocked)
+
     let raf = 0
     const pump = () => {
       const st = store.getState()
@@ -565,6 +636,9 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       // ⌥ on its own is the talk key — even from the text box, since it types
       // nothing there on its own.
+      // With the helper running it owns ⌥ everywhere, this window included;
+      // answering here as well would start two listeners on one press.
+      if (PUSH_TO_TALK && e.key === 'Alt' && store.getState().helper) return
       if (PUSH_TO_TALK && e.key === 'Alt') {
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
           e.preventDefault()
@@ -617,7 +691,7 @@ export default function App() {
       }
     }
     const onKeyUp = (e: KeyboardEvent) => {
-      if (PUSH_TO_TALK && e.key === 'Alt') releaseTalk()
+      if (PUSH_TO_TALK && e.key === 'Alt' && !store.getState().helper) releaseTalk()
     }
     const onLeave = () => {
       if (PUSH_TO_TALK) releaseTalk()
@@ -636,6 +710,8 @@ export default function App() {
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onLeave)
       window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('emrys-autoplay-blocked', onBlocked)
+      unphase()
       document.removeEventListener('visibilitychange', onVisibility)
       clearIdle()
       voice.current?.stop()

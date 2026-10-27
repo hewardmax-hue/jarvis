@@ -135,6 +135,25 @@ Changes are picked up within a minute.
 Hands-free instead of push-to-talk: set `VITE_TALK=wake` in `.env.local` and
 reinstall; he then listens for "Emrys".
 
+### Talk from any app — the menu-bar helper
+
+`npm run service:install` also builds **Emrys Helper**, a small menu-bar app in
+`~/Applications`. With it running, hold ⌥ Option in *any* app — your browser, a
+document, a call — and Emrys listens; let go and he answers, without switching
+windows. Holding ⌥ with another key (⌥→, ⌥E) is treated as a shortcut and
+ignored.
+
+- It listens with Apple's speech recognition, on this Mac when your language
+  supports it, and only while ⌥ is held.
+- Its dot in the menu bar shows what Emrys is doing, and its menu opens Emrys,
+  turns the talk key off, or quits it.
+- First run: allow the microphone and speech recognition when macOS asks, then
+  choose **Allow the ⌥ key…** in its menu and switch it on under Accessibility.
+- The Emrys window still has to be open (it can be in the background) — that is
+  where the answer is spoken. Holding ⌥ with it closed opens it.
+
+`npm run service:install -- --no-helper` skips it; uninstall removes it.
+
 ---
 
 ## Approvals and actions

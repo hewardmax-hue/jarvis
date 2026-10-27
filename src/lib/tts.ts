@@ -676,6 +676,9 @@ export function createSpeaker(): Speaker {
       void audio.play().catch((err) => {
         diag.failures++
         diag.lastError = String((err as Error)?.name ?? 'play-rejected')
+        if ((err as Error)?.name === 'NotAllowedError') {
+          window.dispatchEvent(new Event('emrys-autoplay-blocked'))
+        }
         finish()
       })
     })

@@ -48,6 +48,30 @@ type Frame = {
   tier?: string
   version?: number
   brain?: number
+  connected?: boolean
+  down?: boolean
+  cancelled?: boolean
+  final?: boolean
+}
+
+/**
+ * The menu-bar helper, as it reaches the interface through the core: whether
+ * one is running, the talk key going down and up in any app, and the words it
+ * heard — partial while the key is held, final once it is let go.
+ */
+export type HelperEvent =
+  | { type: 'presence'; connected: boolean; ready: boolean; missing: string[] }
+  | { type: 'talk'; down: boolean; cancelled: boolean }
+  | { type: 'heard'; text: string; final: boolean }
+
+let onHelper: ((e: HelperEvent) => void) | null = null
+export function watchHelper(fn: (e: HelperEvent) => void) {
+  onHelper = fn
+}
+
+/** What the interface is doing, for the helper's menu-bar orb. */
+export function sendPhase(phase: string) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'phase', phase }))
 }
 
 /** An item from the second brain that matched what was just said. */
@@ -283,6 +307,17 @@ function dispatch(ws: WebSocket) {
       else answerApproval(req.id, false)
     } else if (msg.type === 'approval_closed' && msg.id) {
       onApproval?.close(msg.id)
+    } else if (msg.type === 'helper') {
+      onHelper?.({
+        type: 'presence',
+        connected: msg.connected === true,
+        ready: (msg as { ready?: boolean }).ready === true,
+        missing: Array.isArray((msg as { missing?: unknown }).missing) ? ((msg as { missing: string[] }).missing) : [],
+      })
+    } else if (msg.type === 'helper_talk') {
+      onHelper?.({ type: 'talk', down: msg.down === true, cancelled: msg.cancelled === true })
+    } else if (msg.type === 'helper_heard' && typeof msg.text === 'string') {
+      onHelper?.({ type: 'heard', text: msg.text, final: msg.final === true })
     } else if (msg.type === 'brain' && typeof msg.version === 'number') {
       onBrain?.({ type: 'version', version: msg.version })
     } else if (msg.type === 'recall' && Array.isArray(msg.hits)) {

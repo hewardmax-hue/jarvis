@@ -32,6 +32,8 @@ export function Presence() {
   const caption = useStore((s) => s.caption)
   const activeTool = useStore((s) => s.activeTool)
   const looking = useStore((s) => s.looking)
+  const helper = useStore((s) => s.helper)
+  const helperMissing = useStore((s) => s.helperMissing)
 
   useEffect(() => {
     const el = canvas.current
@@ -97,7 +99,11 @@ export function Presence() {
     ? `Looking — ${looking}`
     : phase === 'tooling' && activeTool
       ? activeTool.replace(/[_-]/g, ' ')
-      : STATUS[phase]
+      : phase === 'dormant' && helper
+        ? 'Hold ⌥ in any app to talk, or type'
+        : phase === 'dormant' && helperMissing.includes('accessibility')
+          ? 'Hold ⌥ here to talk — for any app, allow Emrys Helper in Accessibility'
+          : STATUS[phase]
 
   return (
     <div className={`presence presence-${phase}`}>

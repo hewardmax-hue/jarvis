@@ -122,6 +122,10 @@ type State = {
   looking: string | null
   /** True while the user is sharing their screen with him. */
   sharing: boolean
+  /** True while the menu-bar helper can hear ⌥ and listen: ⌥ then works from any app. */
+  helper: boolean
+  /** What the running helper is still waiting for, e.g. ['accessibility']. Empty when ready or absent. */
+  helperMissing: string[]
   panels: Panel[]
   blades: Blade[]
   focusedBlade: string | null
@@ -149,6 +153,7 @@ type State = {
   setGestures: (on: boolean) => void
   setLooking: (why: string | null) => void
   setSharing: (on: boolean) => void
+  setHelper: (on: boolean, missing?: string[]) => void
   pushPanel: (p: Panel) => void
   clearPanels: () => void
   pushBlade: (b: Blade) => void
@@ -193,6 +198,8 @@ export const useStore = create<State>((set, get) => ({
   gestures: false,
   looking: null,
   sharing: false,
+  helper: false,
+  helperMissing: [],
   panels: [],
   blades: [],
   focusedBlade: null,
@@ -218,6 +225,7 @@ export const useStore = create<State>((set, get) => ({
   setGestures: (gestures) => set({ gestures }),
   setLooking: (looking) => set({ looking }),
   setSharing: (sharing) => set({ sharing }),
+  setHelper: (helper, helperMissing = []) => set({ helper, helperMissing }),
 
   // A composed panel opens as a markup blade: one surface for everything.
   pushPanel: (panel) =>
