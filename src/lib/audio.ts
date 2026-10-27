@@ -45,7 +45,7 @@ export function micLevel(): number {
   return Math.min(1, avg * 3.2)
 }
 
-/** Analyser fed from an <audio> element, so the orb reacts while JARVIS talks. */
+/** Analyser fed from an <audio> element, so the orb reacts while Emrys talks. */
 export function attachOutputAnalyser(el: HTMLAudioElement): () => number {
   const c = new AudioContext()
   const src = c.createMediaElementSource(el)
@@ -61,4 +61,18 @@ export function attachOutputAnalyser(el: HTMLAudioElement): () => number {
     for (let i = 2; i < b.length; i++) sum += b[i]
     return Math.min(1, sum / (b.length - 2) / 255 * 3)
   }
+}
+
+/**
+ * Close the microphone. Under push-to-talk the analyser only runs while the key
+ * is held — an always-open stream keeps the system's microphone light on all
+ * day, which is the opposite of "it hears nothing unless I'm holding the key".
+ */
+export function stopAnalyser(): void {
+  stream?.getTracks().forEach((t) => t.stop())
+  stream = null
+  void ctx?.close().catch(() => {})
+  ctx = null
+  analyser = null
+  buf = null
 }

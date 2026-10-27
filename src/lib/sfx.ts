@@ -20,8 +20,8 @@ let master: GainNode | null = null
 const samples = new Map<Cue, AudioBuffer>()
 let ambient: { source: AudioBufferSourceNode; gain: GainNode } | null = null
 
-/** Where the master sits when JARVIS isn't speaking. */
-let volume = 0.5
+/** Where the master sits when Emrys isn't speaking. Quiet: these are cues, not sounds to notice. */
+let volume = 0.28
 let ducked = false
 /** How far everything this module makes drops under the voice. */
 const DUCK = 0.45
@@ -74,11 +74,11 @@ export async function unlockAudio(): Promise<void> {
        */
     }
   }
-  void loadOverrides()
+  // Real recordings in public/audio/ were supported here; Emrys ships none, so nothing is fetched.
 }
 
 /** Pick up any real audio files the user has dropped into public/audio/. */
-async function loadOverrides() {
+export async function loadOverrides() {
   const cues: Cue[] = ['boot', 'wake', 'listen', 'tool', 'done', 'error']
   await Promise.all(
     cues.map(async (cue) => {
@@ -93,6 +93,14 @@ async function loadOverrides() {
       }
     }),
   )
+}
+
+/** Safe to call on every interaction; only the first one does anything. */
+let unlocked = false
+export function unlock() {
+  if (unlocked) return
+  unlocked = true
+  void unlockAudio()
 }
 
 export function setVolume(v: number) {
@@ -280,7 +288,7 @@ export function stopAmbient() {
 }
 
 /**
- * Duck everything this module makes while JARVIS speaks.
+ * Duck everything this module makes while Emrys speaks.
  *
  * This used to touch only the synthesised bed, and return early when there
  * wasn't one — which there never is, because the ambient layer in the shipped

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// JARVIS preflight — a friendly, advisory check you run with `npm run setup`.
+// Emrys preflight — a friendly, advisory check you run with `npm run setup`.
 //
 // It changes nothing and installs nothing. It looks at your machine, tells you
 // what is ready and what is missing, and prints the two commands that start
-// JARVIS. Every check degrades to a single friendly line if something is not
+// Emrys. Every check degrades to a single friendly line if something is not
 // there, and the script always exits 0 — it is advice, not a gate.
 
 import { spawnSync } from 'node:child_process';
@@ -20,7 +20,7 @@ function line(tag, msg) {
 }
 
 console.log('');
-console.log('JARVIS preflight — checking your machine (nothing is changed)');
+console.log('Emrys preflight — checking your machine (nothing is changed)');
 console.log('------------------------------------------------------------');
 
 // --- Node version --------------------------------------------------------
@@ -32,7 +32,7 @@ try {
     line(warn, `Node.js ${process.versions.node} is below 20. Please upgrade — the bridge needs Node 20 or newer.`);
   }
 } catch {
-  line(warn, 'Could not read the Node.js version. JARVIS needs Node 20 or newer.');
+  line(warn, 'Could not read the Node.js version. Emrys needs Node 20 or newer.');
 }
 
 // --- Claude CLI on PATH ---------------------------------------------------
@@ -69,10 +69,10 @@ try {
   if (mcpCount > 0) {
     line(tick, `~/.claude.json found with ${mcpCount} MCP server${mcpCount === 1 ? '' : 's'} configured.`);
   } else {
-    line(info, '~/.claude.json found, but no MCP servers are configured yet. JARVIS still answers and drives its own interface.');
+    line(info, '~/.claude.json found, but no MCP servers are configured yet. Emrys still answers and drives its own interface.');
   }
 } catch {
-  line(info, '~/.claude.json not found yet. It appears once you run `claude` and log in. JARVIS works without any MCP servers.');
+  line(info, '~/.claude.json not found yet. It appears once you run `claude` and log in. Emrys works without any MCP servers.');
 }
 
 // --- ElevenLabs key (env or the elevenlabs MCP entry) --------------------
@@ -99,18 +99,18 @@ const elSource = findElevenLabsKey();
 if (elSource) {
   line(tick, `Premium voice available — ElevenLabs key found via ${elSource}.`);
 } else {
-  line(info, 'No ElevenLabs key found — JARVIS will use browser speech (that is completely fine).');
+  line(info, 'No ElevenLabs key found — Emrys will use browser speech (that is completely fine).');
   line(info, '  Optional: add ELEVENLABS_API_KEY for a better voice and Scribe transcription. The free tier is enough for a demo.');
 }
 
 // --- How to run ----------------------------------------------------------
 console.log('');
-console.log('To run JARVIS, open two terminals:');
+console.log('To run Emrys, open two terminals:');
 console.log('  1)  npm run bridge      # the brain (Claude Code, headless)');
 console.log('  2)  npm run dev         # the face (open http://localhost:5173 in Chrome)');
 console.log('');
 console.log('Then click INITIALISE and say "Hey Jarvis".');
-console.log('To let JARVIS take real actions (phone, browser, sending), run `npm run bridge:writes` instead of `npm run bridge`.');
+console.log('To let Emrys take real actions (phone, browser, sending), run `npm run bridge:writes` instead of `npm run bridge`.');
 console.log('');
 
 process.exit(0);

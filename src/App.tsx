@@ -1,20 +1,22 @@
-import { useEffect, useRef } from 'react'
-import { Scene } from './scene/Scene'
-import { Hud } from './ui/Hud'
-import { Boot } from './ui/Boot'
-import { Ignition } from './ui/Ignition'
+import { useEffect, useRef, useState } from 'react'
+import { BrainMap } from './ui/brain/BrainMap'
+import { MemoryPanel } from './ui/MemoryPanel'
+import { Conversation } from './ui/Conversation'
+import { TopBar } from './ui/TopBar'
+import { Presence } from './ui/Presence'
+import { Blades } from './ui/Blades'
 import { Diagnostics } from './ui/Diagnostics'
-import { useStore } from './store'
+import { Pointer } from './ui/Pointer'
+import { GestureGuide } from './ui/GestureGuide'
+import { useStore, type Tier } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
-import { createSpeaker, cycleVoice, currentVoiceName } from './lib/tts'
+import { createSpeaker, currentVoiceName } from './lib/tts'
 import * as sfx from './lib/sfx'
-import * as music from './lib/music'
 import * as hands from './lib/hands'
-import { listenForClap } from './lib/clap'
 import * as camera from './lib/camera'
-import * as kokoro from './lib/kokoro'
-import { PUSH_TO_TALK, TTS_ENGINE } from './config'
-import { forTool, attention } from './lib/fillers'
+import * as screen from './lib/screen'
+import { PUSH_TO_TALK } from './config'
+import { forTool, attention, stall } from './lib/fillers'
 import {
   ask,
   warm,
@@ -27,69 +29,58 @@ import {
   watchConnection,
   watchApprovals,
   watchNotices,
+  watchBrain,
   connectedLabels,
   usingBridge,
   type Msg,
+  type RecallHit,
 } from './lib/brain'
+import { fetchGraph } from './lib/memory'
 import { answerFromSpeech, decide } from './lib/approval'
-import { startAnalyser, micLevel } from './lib/audio'
-import { probeCapabilities } from './lib/capabilities'
+import { startAnalyser, stopAnalyser, micLevel } from './lib/audio'
+import { caps, probeCapabilities } from './lib/capabilities'
 import { env } from './config'
 
 /**
- * The conversation.
+ * Emrys.
  *
- * This used to be a sequential loop — greet, await a capture, await an answer,
- * repeat — with the microphone opened and closed around each step. That shape
- * cannot be interrupted: while it is awaiting the answer, nothing is listening,
- * so there is no way for the user to get a word in.
+ * The page opens straight into the live interface — no ignition screen, no
+ * start-up sequence, no music. The core is always running, so there is nothing
+ * to wait for: the socket connects, the map loads, and he is ready.
  *
- * It is an event machine now. The voice loop runs continuously and pushes
- * events at us; every one of them is legal in every phase. Saying anything at
- * all stops him talking, and whatever you say next becomes the new turn.
+ * The conversation is an event machine. Speech, typing, the talk key, approvals
+ * and the core's pushes are all events legal in every phase: saying or typing
+ * anything stops him talking, and becomes the next turn.
  */
 
-/** How long to wait for someone to start speaking after he wakes. Generous:
- *  people say his name and *then* think about what they wanted. */
+/** Hands-free mode: how long to wait for speech after his name, and for a follow-up. */
 const AWAIT_SPEECH_MS = 14000
-
-/** After an answer, how long the mic stays open for a follow-up before he
- *  drops back to standby. Long enough that you don't have to say the name
- *  again to continue a thought. */
 const FOLLOW_UP_MS = 11000
 
-/** crypto.randomUUID needs a secure context, which a LAN address over plain
- *  http is not. Not worth failing a whole turn over an id. */
+/** A first word later than this gets a small spoken "one sec" — silence that long reads as a hang. */
+const STALL_MS = 2200
+
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `id${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 
-/** The same mishearings voice.ts accepts for the wake word — otherwise a turn
- *  that woke him as "travis" gets that word sent on to the model as a question. */
-const NAME = '(?:jarvis|jarvys|jervis|travis|jarviss|java\'s|jarv)'
-/** A bare vocative — "Jarvis", "hey jarvis" — with nothing asked. */
+/** The ways speech recognition hears "Emrys". */
+const NAME = "(?:emrys|emris|emeris|emerys|emmerys|emory's|emorys|emrees|amrys|amris|imris|embrys)"
 const BARE_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}[\\s,.!?]*$`, 'i')
-/** A leading vocative on a real command: "Jarvis, what's the weather". */
 const LEADING_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}\\b[\\s,.:!?-]*`, 'i')
 
 export default function App() {
   const store = useStore
-  const phase = useStore((s) => s.phase)
   const history = useRef<Msg[]>([])
   const speaker = useRef<ReturnType<typeof createSpeaker> | null>(null)
   const voice = useRef<Voice | null>(null)
-
-  /**
-   * Monotonic turn counter. Every await in a turn checks it on the way out:
-   * if it has moved, that turn was superseded by a barge-in and must not touch
-   * the phase, the speaker, or the busy state on its way to the floor.
-   */
   const turn = useRef(0)
-  /** Briefings already mentioned on waking, so each is announced once. */
-  const announced = useRef(new Set<string>())
-  const booting = useRef(false)
+  const started = useRef(false)
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const voicePoll = useRef<ReturnType<typeof setInterval> | null>(null)
+  /** Notes recalled for the turn in flight, attached to his answer when it starts. */
+  const recalled = useRef<RecallHit[]>([])
+  const announced = useRef(new Set<string>())
+  const [draft, setDraft] = useState('')
 
   // -- helpers --------------------------------------------------------------
 
@@ -103,25 +94,6 @@ export default function App() {
     speaker.current = null
   }
 
-  const goDormant = () => {
-    // Standing down is not a yes. Whatever was waiting on one is refused.
-    decide(false)
-    clearIdle()
-    silence()
-    turn.current++
-    const s = store.getState()
-    s.setCaption('')
-    s.setActiveTool(null)
-    music.working(false)
-    music.duck(false)
-    sfx.duck(false)
-    s.setPhase('dormant')
-  }
-
-  /**
-   * Between turns under push-to-talk. There is no open microphone to wait on —
-   * nothing is heard until the key goes down — so he simply stands by.
-   */
   const standBy = () => {
     clearIdle()
     const s = store.getState()
@@ -135,19 +107,20 @@ export default function App() {
     turn.current++
     interrupt()
     store.getState().setActiveTool(null)
-    music.working(false)
     sfx.duck(false)
-    music.duck(false)
   }
 
-  /** Open the mic and wait. `window` is how long before he gives up. */
   const listen = (window: number) => {
     clearIdle()
     const s = store.getState()
     s.setCaption('')
     s.setPhase('listening')
-    sfx.play('listen')
-    idleTimer.current = setTimeout(goDormant, window)
+    idleTimer.current = setTimeout(standBy, window)
+  }
+
+  const awaitMore = () => {
+    if (PUSH_TO_TALK) standBy()
+    else listen(AWAIT_SPEECH_MS)
   }
 
   // -- one turn -------------------------------------------------------------
@@ -158,53 +131,64 @@ export default function App() {
 
     clearIdle()
     const s = store.getState()
-    // Last turn's panels and blades go now, before the new answer starts
-    // putting its own up. Anything the model marked sticky survives.
-    s.clearPanels()
     s.clearBlades()
     s.setCaption('')
-    s.pushTurn({ id: newId(), role: 'user', text: said })
+    s.setError(null)
+    s.pushTurn({ id: newId(), role: 'user', text: said, at: Date.now() })
     s.setPhase('thinking')
+    recalled.current = []
 
     const spk = createSpeaker()
     speaker.current = spk
     sfx.duck(true)
-    music.duck(true)
 
     const turnId = newId()
-    let started = false
+    let begun = false
     let filled = false
+    const tools: string[] = []
+
+    // A slow start gets a small spoken beat, once — the way a person says "hm"
+    // rather than stare. Never when he is muted, never once he has begun.
+    const stallTimer = setTimeout(() => {
+      if (stale() || begun || filled || store.getState().muted) return
+      filled = true
+      spk.say(stall())
+    }, STALL_MS)
+
+    const ensureTurn = () => {
+      if (begun) return
+      begun = true
+      store.getState().pushTurn({
+        id: turnId,
+        role: 'emrys',
+        text: '',
+        at: Date.now(),
+        sources: recalled.current.length ? recalled.current : undefined,
+        tools: tools.length ? [...tools] : undefined,
+      })
+    }
 
     try {
       const { text } = await ask(said, history.current, {
         onText: (delta) => {
           if (stale()) return
-          if (!started) {
-            started = true
+          if (!begun) {
+            ensureTurn()
             store.getState().setPhase('speaking')
-            // The answer arriving is what ends the tool phase — a timer would
-            // clear the readout while a slow tool was still running.
             store.getState().setActiveTool(null)
-            music.working(false)
-            store.getState().pushTurn({ id: turnId, role: 'jarvis', text: '' })
           }
           store.getState().appendToLastTurn(delta)
           spk.push(delta)
         },
         onTool: (name) => {
           if (stale()) return
-          // Only claim the tooling phase while he has nothing to say yet.
-          // Setting it unconditionally pinned the machine in 'tooling' for the
-          // rest of any answer that called a tool after it started talking,
-          // which also broke the reactor's lip-sync for the remainder.
-          if (!started) store.getState().setPhase('tooling')
+          tools.push(name)
+          if (begun) store.getState().patchTurn(turnId, { tools: [...tools] })
+          if (!begun) store.getState().setPhase('tooling')
           store.getState().setActiveTool(name)
           sfx.play('tool')
-          music.working(true)
-          // Say something the moment work starts — a tool can take ten seconds
-          // and silence that long reads as a crash. Once per turn only; a
-          // chain of five tools shouldn't produce five apologies.
-          if (!filled && !started) {
+          // One line the moment work starts, so a slow tool is not dead air.
+          if (!filled && !begun) {
             filled = true
             spk.say(forTool(name))
           }
@@ -212,53 +196,57 @@ export default function App() {
       })
 
       if (stale()) return
-
-      // The bridge keeps conversation state in its own session, so history is
-      // only threaded through on the direct path.
+      if (!begun && text) {
+        ensureTurn()
+        store.getState().appendToLastTurn(text)
+        spk.push(text)
+      }
       if (!usingBridge) {
         history.current.push({ role: 'user', content: said })
         history.current.push({ role: 'assistant', content: text || '…' })
-        if (history.current.length > 16) {
-          history.current = history.current.slice(-16)
-        }
+        if (history.current.length > 16) history.current = history.current.slice(-16)
       }
-
       await spk.end()
       if (stale()) return
-      sfx.play('done')
     } catch (err) {
       if (stale()) return
       console.error(err)
       sfx.play('error')
-      store
-        .getState()
-        .setError(err instanceof Error ? err.message : 'Something went wrong.')
+      store.getState().setError(err instanceof Error ? err.message : 'Something went wrong.')
     } finally {
+      clearTimeout(stallTimer)
       if (!stale()) {
         speaker.current = null
         sfx.duck(false)
-        music.duck(false)
         store.getState().setActiveTool(null)
-        music.working(false)
-        // Stay open. Having to say his name again to add one more sentence is
-        // the difference between a conversation and a vending machine. Under
-        // push-to-talk the key is how you add one, so he stands by instead.
         if (PUSH_TO_TALK) standBy()
         else listen(FOLLOW_UP_MS)
       }
     }
   }
 
+  /** Typed or clicked: a turn like any other, interrupting whatever he is saying. */
+  const send = (text: string) => {
+    sfx.unlock()
+    const s = store.getState()
+    if (s.approval) {
+      const answer = answerFromSpeech(text)
+      if (answer !== null) {
+        decide(answer)
+        return
+      }
+      decide(false)
+    }
+    if (s.phase === 'thinking' || s.phase === 'tooling' || s.phase === 'speaking') cutOff()
+    else silence()
+    void respond(text)
+  }
+
   // -- voice events ---------------------------------------------------------
 
-  /** What the voice loop should do with what it hears, derived from phase. */
   const mode = (): VoiceMode => {
     const s = store.getState()
-    // He has asked a yes-or-no question and the turn is held open on it, so
-    // what comes next is an answer to be heard, not an interruption to obey.
-    if (s.approval && s.phase !== 'offline' && s.phase !== 'boot' && s.phase !== 'dormant') {
-      return 'command'
-    }
+    if (s.approval && s.phase !== 'offline' && s.phase !== 'boot' && s.phase !== 'dormant') return 'command'
     switch (s.phase) {
       case 'offline':
       case 'boot':
@@ -269,82 +257,45 @@ export default function App() {
       case 'listening':
         return 'command'
       default:
-        return 'guard' // thinking, tooling, speaking
+        return 'guard'
     }
   }
 
   const onWake = (trailing: string) => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot') return
-
     store.getState().setError(null)
     sfx.play('wake')
-
-    // "Jarvis, what's happening in AI this week" in one breath. Waiting for a
-    // greeting he didn't need is the most common way an assistant wastes time.
     if (trailing) {
       void respond(trailing)
       return
     }
-
     store.getState().setPhase('waking')
-
-    // Answer to his name. Deliberately NOT awaited any more: the microphone is
-    // already open and the echo filter knows his voice, so the user can talk
-    // straight over the greeting instead of waiting it out.
-    //
-    // A briefing finished while they were away replaces the greeting, once —
-    // the first thing worth saying is that something is waiting.
     const fresh = store.getState().notices.find((n) => !announced.current.has(n.id))
     if (fresh) announced.current.add(fresh.id)
     const greeting = createSpeaker()
     speaker.current = greeting
-    greeting.say(fresh ? `Sir, your ${fresh.title.toLowerCase()} is ready.` : attention())
+    greeting.say(fresh ? `Your ${fresh.title.toLowerCase()} is ready.` : attention())
     void greeting.end()
-
     listen(AWAIT_SPEECH_MS)
   }
 
-  /**
-   * Someone started talking. This is the whole point of the rewrite: he stops,
-   * immediately, whatever he was doing.
-   */
   const onSpeechStart = () => {
     clearIdle()
-    // Under push-to-talk the key press already did all of this.
     if (PUSH_TO_TALK) return
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot' || phase === 'dormant') return
-    // Talking while a card is up is answering it. Cutting him off here would
-    // abandon the very turn that is waiting for the answer.
     if (store.getState().approval) return
-
-    const wasBusy =
-      phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
-
-    // Abandon the answer in flight. The turn counter moves in respond()'s
-    // replacement; bumping it here covers the case where nothing replaces it.
-    if (wasBusy) cutOff()
+    if (phase === 'thinking' || phase === 'tooling' || phase === 'speaking') cutOff()
     else silence()
     store.getState().setPhase('listening')
-  }
-
-  /** Nothing usable was said: keep listening, or under push-to-talk, stand by. */
-  const awaitMore = () => {
-    if (PUSH_TO_TALK) standBy()
-    else listen(AWAIT_SPEECH_MS)
   }
 
   const onUtterance = (text: string) => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot') return
-    // Push-to-talk words only exist because the key was held, so they count
-    // whatever the phase — a slow transcript can land after he stood by.
     if (phase === 'dormant' && !PUSH_TO_TALK) return
 
-    // A card is up: this is its answer. Anything that is neither yes nor no is
-    // a change of mind — the action is refused and what they said becomes the
-    // next request, exactly as if they had interrupted.
     if (store.getState().approval) {
       if (BARE_NAME.test(text)) return
       const answer = answerFromSpeech(text.replace(LEADING_NAME, ''))
@@ -354,9 +305,6 @@ export default function App() {
       }
       decide(false)
     }
-
-    // People keep using his name as a vocative once they're already talking to
-    // him. Strip it rather than sending "jarvis" to the model as a question.
     if (BARE_NAME.test(text)) {
       awaitMore()
       return
@@ -366,27 +314,20 @@ export default function App() {
       awaitMore()
       return
     }
-
     void respond(said)
-  }
-
-  const onPartial = (text: string) => {
-    store.getState().setCaption(text)
   }
 
   // -- push-to-talk ---------------------------------------------------------
 
-  /**
-   * ⌥ went down. Stop him if he is talking, and start hearing — the only
-   * moment anything is heard at all under push-to-talk.
-   */
+  const holding = useRef(false)
+
   const pressTalk = () => {
     const s = store.getState()
-    if (s.phase === 'offline' || s.phase === 'boot' || !voice.current) return
+    if (!voice.current || holding.current) return
+    holding.current = true
+    sfx.unlock()
     s.setError(null)
     clearIdle()
-    // A card is up and the turn is held open on it: this press is its answer,
-    // so nothing is interrupted and the turn keeps its phase.
     if (!s.approval) {
       if (s.phase === 'thinking' || s.phase === 'tooling' || s.phase === 'speaking') cutOff()
       else silence()
@@ -394,83 +335,78 @@ export default function App() {
       s.setPhase('listening')
     }
     sfx.play('listen')
+    // The level meter for the orb, only while the key is down — the microphone
+    // light should mean he is listening, and only then.
+    void startAnalyser().catch(() => {})
     void voice.current.hold(true)
   }
 
-  /** ⌥ came up. What was said goes as one turn; a press with nothing in it stands by. */
   const releaseTalk = () => {
-    if (!voice.current) return
+    if (!voice.current || !holding.current) return
+    holding.current = false
+    stopAnalyser()
     void voice.current.hold(false).then((heard) => {
       if (heard) return
       const s = store.getState()
-      // Still waiting on a yes or no: leave the card up for another try.
       if (s.approval) return
       if (s.phase === 'listening') standBy()
     })
   }
 
-  const onVoiceError = (message: string) => {
-    store.getState().setError(message)
+  // -- the second brain -----------------------------------------------------
+
+  const loadGraph = useRef<() => void>(() => {})
+  loadGraph.current = () => {
+    void fetchGraph()
+      .then((g) => {
+        // Same nodes and lines as before — a conversation file grew, a summary
+        // landed — keeps the map as it is. Re-running the layout for that
+        // would nudge every point after every turn.
+        const old = store.getState().graph
+        const shape = (x: typeof g) => `${x.nodes.map((n) => n.id).join('|')}#${x.links.length}`
+        if (old && shape(old) === shape(g)) {
+          old.nodes.forEach((n, i) => {
+            n.label = g.nodes[i].label
+            n.date = g.nodes[i].date
+          })
+          store.getState().setGraphVersion(g.version)
+          return
+        }
+        store.getState().setGraph(g)
+      })
+      .catch(() => {})
   }
 
-  // -- power on -------------------------------------------------------------
+  // -- start ----------------------------------------------------------------
 
-  const powerOn = async () => {
-    // The ignition button and the space bar can both land here, and the phase
-    // only moves after the first await — so without this a double press boots
-    // twice, arming two voice loops and two download polls.
-    if (booting.current) return
-    booting.current = true
-
-    try {
-      await ignite()
-    } catch (err) {
-      // The guard must not outlive a failed boot. Audio unlock can be refused,
-      // the microphone prompt dismissed, the bridge unreachable at the wrong
-      // moment — and with the flag still latched the ignition button was dead
-      // for the rest of the page, recoverable only by reloading. Reset it and
-      // put the button back so the user can simply press it again.
-      booting.current = false
-      console.error('[jarvis] power-up failed:', err)
-      store.getState().setPhase('offline')
-      store
-        .getState()
-        .setError(
-          err instanceof Error
-            ? `Power-up failed: ${err.message}`
-            : 'Power-up failed. Click to try again.',
-        )
-    }
-  }
-
-  const ignite = async () => {
+  const start = async () => {
+    if (started.current) return
+    started.current = true
     const s = store.getState()
-
-    // Must happen inside the click handler — browsers won't start an
-    // AudioContext or speech synthesis without a user gesture.
-    await sfx.unlockAudio()
-    sfx.play('boot')
-    // The score. Must be started from inside this click handler for the same
-    // reason as the rest of the audio.
-    music.enable()
-    music.playBoot()
-    music.startAmbient()
-
     s.setPhase('boot')
 
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
 
-    /**
-     * JARVIS asking to see something.
-     *
-     * Announced on screen for as long as it takes, with whatever he said he was
-     * looking for. The camera's own light is on too, but a hardware light that
-     * appears with no explanation is exactly the thing that makes people
-     * distrust an assistant — so the interface says it before they have to ask.
-     */
     watchCapture(async (req) => {
+      if (req.source === 'screen') {
+        if (!screen.sharing()) {
+          return {
+            error:
+              'The user is not sharing their screen. Ask them to click "Share screen" at ' +
+              'the top right of your window, then look again.',
+          }
+        }
+        store.getState().setLooking(req.reason || 'your screen')
+        try {
+          return screen.grabScreen()
+        } catch (err) {
+          return { error: `The screen could not be read: ${(err as Error)?.message ?? err}` }
+        } finally {
+          setTimeout(() => store.getState().setLooking(null), 600)
+        }
+      }
       const note =
         req.mode === 'watch'
           ? req.when === 'past'
@@ -478,23 +414,14 @@ export default function App() {
             : `${req.reason || 'watching'} · ${req.seconds}s`
           : req.reason || 'taking a look'
       store.getState().setLooking(note)
-
-      // The past is only available if something has been remembering it, and
-      // that only happens while the camera is on screen. Answering plainly
-      // beats opening the camera and recording the next few seconds instead,
-      // which is a different question from the one that was asked.
       if (req.mode === 'watch' && req.when === 'past' && camera.bufferedSeconds() < 1) {
         store.getState().setLooking(null)
         return {
           error:
-            'There is no recent footage — the camera has to be open on screen ' +
-            'for me to remember what just happened. Ask me to open the camera, ' +
-            'and I can watch from then on.',
+            'There is no recent footage — the camera has to be open on screen for me to ' +
+            'remember what just happened. Ask me to open the camera, and I can watch from then on.',
         }
       }
-
-      // Held for the whole capture. Without this the stream can be torn down by
-      // whoever else was using it half way through a six-second watch.
       let held = false
       try {
         await camera.holdCamera()
@@ -518,53 +445,23 @@ export default function App() {
       }
     })
 
-    // The interface is JARVIS's to drive. These arrive out of band, pushed
-    // mid-turn the way panels are, so a command can retint the reactor or put
-    // something into orbit while he is still speaking the sentence about it.
     watchUi((op, args) => {
-      const s = store.getState()
-      const a = (args ?? {}) as Record<string, never>
-      switch (op) {
-        case 'patch':
-          s.applyUi(args)
-          break
-        case 'orbit':
-          if (a.action === 'add') s.addOrbit(args)
-          else if (a.action === 'remove') s.removeOrbit(String(a.id))
-          else s.clearOrbits()
-          break
-        case 'effect':
-          s.fireEffect(a.kind)
-          break
-        case 'reset':
-          s.resetUi()
-          break
-        case 'screen':
-          s.clearScreen(a.what ?? 'all')
-          break
-        default:
-          console.warn('[jarvis] unknown ui op:', op, args)
-      }
+      const st = store.getState()
+      const a = (args ?? {}) as Record<string, unknown>
+      if (op === 'theme') st.setAccent(typeof a.accent === 'string' && a.accent ? a.accent : null)
+      else if (op === 'screen') st.clearScreen((a.what as 'all' | 'blades' | 'transcript') ?? 'blades')
     })
-    // In bridge mode the conversation lives in the agent session. A reconnect
-    // within a few hours resumes it; after that it starts fresh while the
-    // transcript on screen still shows the old one. Say which, rather than let
-    // him quietly forget.
+
     watchConnection((state) => {
       if (state === 'lost') {
         decide(false)
-        store.getState().setError('Bridge connection lost — reconnecting.')
-      } else if (state === 'resumed') {
+        store.getState().setError('Lost the connection to Emrys’s core — reconnecting.')
+      } else {
         store.getState().setError(null)
-      } else if (state === 'reconnected') {
-        store
-          .getState()
-          .setError('Bridge reconnected. The previous conversation was not kept.')
+        loadGraph.current()
       }
     })
 
-    // An action held for a yes. The card is the question; the bridge holds the
-    // turn open until it is answered, refused, or withdrawn.
     watchApprovals({
       open: (req) => {
         store.getState().setApproval(req)
@@ -575,150 +472,99 @@ export default function App() {
       },
     })
 
-    // Briefings that finished while nobody was looking. A new one chimes;
-    // the list itself is the bridge's to keep, so this only mirrors it.
     watchNotices((items) => {
       const known = new Set(store.getState().notices.map((n) => n.id))
       store.getState().setNotices(items)
-      if (items.some((n) => !known.has(n.id)) && store.getState().phase !== 'boot') {
-        sfx.play('done')
+      if (items.some((n) => !known.has(n.id))) sfx.play('done')
+    })
+
+    // The second brain talking to the interface.
+    let graphTimer = 0
+    watchBrain((e) => {
+      const st = store.getState()
+      if (e.type === 'version') {
+        if (e.version !== st.graph?.version) {
+          clearTimeout(graphTimer)
+          graphTimer = window.setTimeout(() => loadGraph.current(), 250)
+        }
+      } else if (e.type === 'recall') {
+        recalled.current = e.hits
+        st.light(
+          e.hits.map((h) => h.id),
+          'recall',
+        )
+      } else if (e.type === 'focus') {
+        if (e.mode === 'open' && e.ids[0]) st.select(e.ids[0])
+        st.light(e.ids, e.mode)
+      } else if (e.type === 'tier') {
+        st.setTier(e.tier as Tier)
       }
     })
+
+    loadGraph.current()
     const warming = warm().catch((err: Error) => s.setError(err.message))
-
     if (!usingBridge && !env.anthropicKey) {
-      s.setError(
-        'No Anthropic API key — copy .env.example to .env.local and set VITE_ANTHROPIC_API_KEY.',
-      )
+      s.setError('No Anthropic API key — set VITE_ANTHROPIC_API_KEY, or use the core (the default).')
     }
 
-    // Pull the neural voice down during the boot sequence so the first
-    // "Hey Jarvis" isn't waiting on an 86MB download. Deliberately not awaited
-    // — if it's slow, JARVIS comes up on the system voice and swaps over the
-    // moment the model is ready.
-    if (TTS_ENGINE === 'kokoro') {
-      void kokoro.load()
-      voicePoll.current = setInterval(() => {
-        const p = kokoro.loadProgress()
-        if (kokoro.isReady() || kokoro.isUnavailable()) {
-          store.getState().setBootNote('')
-          if (voicePoll.current) clearInterval(voicePoll.current)
-          voicePoll.current = null
-        } else if (p > 0 && p < 1) {
-          store.getState().setBootNote(`voice ${Math.round(p * 100)}%`)
-        }
-      }, 200)
-    }
-
-    // Long enough for the four-beat start-up sequence in Boot.tsx to play —
-    // status bar, rings, suit schematic, reactor power-up — before the live
-    // interface takes over. Kept a touch under the boot cue so the music is
-    // still rising as the reactor lands.
-    await new Promise((r) => setTimeout(r, 9200)) // boot sequence
     await warming
     store.getState().setConnected(connectedLabels())
-    store.getState().setVoice(currentVoiceName())
-
-    // The analyser is what makes the reactor pulse with your voice. It needs a
-    // getUserMedia stream; speech recognition does not, and gets its own. So a
-    // failure here costs the animation and nothing else — saying "voice input
-    // is unavailable" was both alarming and untrue.
-    try {
-      await startAnalyser()
-    } catch {
-      console.warn(
-        '[jarvis] no microphone stream — the reactor will not pulse with your ' +
-          'voice. Speech recognition is unaffected.',
-      )
-    }
-
-    // Ask the bridge which speech engines exist before the loop starts, so the
-    // first turn already uses ElevenLabs when a key is present and the browser
-    // fallback when it is not — no flag, no reload.
     await probeCapabilities()
+    store.getState().setVoice(currentVoiceName())
+    // The voice engine may come up after the page does (its first start
+    // downloads the model). Follow it, so the picker and the voice appear.
+    const followVoice = window.setInterval(() => {
+      store.getState().setVoice(currentVoiceName())
+      if (caps().local) window.clearInterval(followVoice)
+    }, 3000)
 
-    // One voice loop, started once, running until the page closes.
     voice.current = await startVoice({
       mode,
       onWake,
       onSpeechStart,
-      onPartial,
+      onPartial: (text) => store.getState().setCaption(text),
       onUtterance,
-      onError: onVoiceError,
+      onError: (message) => store.getState().setError(message),
       pushToTalk: PUSH_TO_TALK,
     })
 
     store.getState().setPhase('dormant')
-
-    // With no wake word there is no greeting for a waiting briefing to take
-    // over, so it is announced once, now, as he comes up.
-    if (PUSH_TO_TALK) {
-      const fresh = store.getState().notices.find((n) => !announced.current.has(n.id))
-      if (fresh) {
-        announced.current.add(fresh.id)
-        const line = createSpeaker()
-        speaker.current = line
-        line.say(`Sir, your ${fresh.title.toLowerCase()} is ready.`)
-        void line.end()
-      }
-    }
   }
 
-  // -- clap to start --------------------------------------------------------
+  // -- life -----------------------------------------------------------------
 
-  /**
-   * A clap brings him up, as an alternative to the button.
-   *
-   * Only while the ignition screen is showing, and torn down the moment he
-   * boots — the microphone is about to belong to the voice loop, and two
-   * analysers arguing over the same stream is how you get an assistant that
-   * hears half of what you say.
-   *
-   * Deliberately silent about failure. If the microphone is refused, or has not
-   * been granted yet, the button is still right there; announcing an error
-   * about a feature nobody asked for would be worse than quietly doing without.
-   */
   useEffect(() => {
-    if (phase !== 'offline') return
-    let live: { stop: () => void } | null = null
-    let gone = false
-    void listenForClap(() => {
-      if (!gone) void powerOn()
-    }).then((l) => {
-      if (gone) l.stop()
-      else live = l
+    void start().catch((err) => {
+      started.current = false
+      console.error('[emrys] start failed:', err)
+      store.getState().setPhase('offline')
+      store.getState().setError(err instanceof Error ? err.message : 'Could not start.')
     })
-    return () => {
-      gone = true
-      live?.stop()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase])
 
-  // -- level pump + keys ----------------------------------------------------
+    screen.watchScreen((on) => store.getState().setSharing(on))
 
-  useEffect(() => {
     let raf = 0
-
     const pump = () => {
       const st = store.getState()
-      // While speaking, follow JARVIS's own output rather than the mic, so the
-      // orb lip-syncs instead of reacting to room noise.
-      const lvl =
-        st.phase === 'speaking' && speaker.current
-          ? speaker.current.level()
-          : micLevel()
-      st.setLevel(lvl)
+      const lvl = st.phase === 'speaking' && speaker.current ? speaker.current.level() : micLevel()
+      if (Math.abs(lvl - st.level) > 0.01) st.setLevel(lvl)
       raf = requestAnimationFrame(pump)
     }
     pump()
 
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+    // Audio can only start after the page has been interacted with. Any first
+    // click or key does it.
+    const unlock = () => sfx.unlock()
+    window.addEventListener('pointerdown', unlock, { once: true })
 
-      // ⌥ Option on its own is the talk key under push-to-talk. With ⌘, ⌃ or
-      // ⇧ it is a shortcut for something else, and is left alone.
+    const typing = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      // ⌥ on its own is the talk key — even from the text box, since it types
+      // nothing there on its own.
       if (PUSH_TO_TALK && e.key === 'Alt') {
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
           e.preventDefault()
@@ -726,129 +572,50 @@ export default function App() {
         }
         return
       }
+      // Any other key while ⌥ is held is a shortcut or a special character —
+      // the user is typing, not talking.
+      if (holding.current && e.altKey) {
+        holding.current = false
+        stopAnalyser()
+        void voice.current?.hold(false)
+        standBy()
+      }
 
-      // Y and N answer an approval card. Only while one is up — the rest of
-      // the time neither key means anything.
-      if (
-        store.getState().approval &&
-        (e.key === 'y' || e.key === 'n') &&
-        !e.repeat &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey
-      ) {
+      if (e.key === 'Escape') {
+        const st = store.getState()
+        if (st.phase === 'thinking' || st.phase === 'tooling' || st.phase === 'speaking') {
+          cutOff()
+          standBy()
+        } else if (st.blades.length) st.clearScreen('blades')
+        else if (st.selected) st.select(null)
+        return
+      }
+
+      if (typing(e)) return
+
+      if (store.getState().approval && (e.key === 'y' || e.key === 'n') && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
         decide(e.key === 'y')
         return
       }
 
-      // V auditions the next British voice installed on this machine. Which
-      // ones exist varies per Mac, so hearing them beats trusting a ranking.
-      // Bare V only — ⌘V and ⌃V are paste, and swallowing those was rude.
-      if (
-        e.key === 'v' &&
-        !e.repeat &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey
-      ) {
-        e.preventDefault()
-        const name = cycleVoice()
-        store.getState().setVoice(name)
-        silence()
-        const demo = createSpeaker()
-        speaker.current = demo
-        demo.say(`Voice set to ${name.replace(/\(.*?\)/g, '').trim()}. At your service, sir.`)
-        void demo.end()
-        return
-      }
-
-      // G puts the camera on and starts tracking hands. Off by default and
-      // never implicit: a webcam that turns itself on because an interface
-      // thought it might be useful is not a trade anyone agreed to.
+      // G turns the camera and hand tracking on and off.
       if (e.key === 'g' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
-        const on = store.getState().gestures
-        if (on) {
+        if (store.getState().gestures) {
           hands.disableHands()
           store.getState().setGestures(false)
         } else {
-          store.getState().setError(null)
           void hands
             .enableHands()
             .then(() => store.getState().setGestures(true))
             .catch((err: Error) => {
               store.getState().setGestures(false)
-              store
-                .getState()
-                .setError(
-                  err?.name === 'NotAllowedError'
-                    ? 'Camera access denied — gesture control is unavailable.'
-                    : `Gesture control failed to start: ${err?.message ?? err}`,
-                )
+              store.getState().setError(`Gesture control failed to start: ${err?.message ?? err}`)
             })
         }
-        return
-      }
-
-      // T speaks a fixed line, bypassing the wake word, the recogniser and the
-      // model entirely. When "I can't hear him" is the report, this is the one
-      // keypress that separates a broken voice engine from a broken voice loop
-      // — and it prints the verdict rather than making you infer it.
-      if (e.key === 't' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault()
-        silence()
-        const t = createSpeaker()
-        speaker.current = t
-        t.say('Audio test. If you can hear this, speech output is working, sir.')
-        void t.end().then(() => {
-          const d = (window as unknown as Record<string, Record<string, unknown>>).__tts
-          console.info('[jarvis] audio test →', d)
-          if (d && d.started === 0 && d.rescued === 0) {
-            store.getState().setError(
-              `No sound produced. engine=${d.engine} voice=${d.voice} error=${d.lastError || 'none'}`,
-            )
-          }
-        })
-        return
-      }
-
-      // Escape stands the whole thing down — the one thing the old build had
-      // no key for at all.
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        if (store.getState().phase !== 'offline') goDormant()
-        return
-      }
-
-      // Space starts a turn without the wake word. Worth using while filming so
-      // a missed wake word doesn't cost a take. Under push-to-talk it only
-      // powers him up: opening the microphone is the talk key's job alone.
-      if (e.code !== 'Space' || e.repeat) return
-      e.preventDefault()
-
-      const phase = store.getState().phase
-      if (PUSH_TO_TALK && phase !== 'offline') return
-      if (phase === 'offline') {
-        void powerOn()
-      } else if (phase === 'boot') {
-        /* ignore — the boot sequence owns the phase until it finishes */
-      } else if (
-        phase === 'thinking' ||
-        phase === 'tooling' ||
-        phase === 'speaking'
-      ) {
-        onSpeechStart()
-        listen(AWAIT_SPEECH_MS)
-      } else {
-        onWake('')
       }
     }
-    window.addEventListener('keydown', onKey)
-
-    // Letting go of ⌥ sends. So does losing the window mid-press — ⌘-Tab away
-    // while holding it and the keyup goes to another app, which would otherwise
-    // leave him listening with nobody holding the key.
     const onKeyUp = (e: KeyboardEvent) => {
       if (PUSH_TO_TALK && e.key === 'Alt') releaseTalk()
     }
@@ -858,6 +625,7 @@ export default function App() {
     const onVisibility = () => {
       if (document.hidden) onLeave()
     }
+    window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onLeave)
     document.addEventListener('visibilitychange', onVisibility)
@@ -867,24 +635,48 @@ export default function App() {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onLeave)
+      window.removeEventListener('pointerdown', unlock)
       document.removeEventListener('visibilitychange', onVisibility)
       clearIdle()
-      if (voicePoll.current) clearInterval(voicePoll.current)
       voice.current?.stop()
       speaker.current?.cancel()
-      // The camera must not outlive the page that turned it on.
       hands.disableHands()
+      screen.stopScreenShare()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const gestures = useStore((s) => s.gestures)
+  const blades = useStore((s) => s.blades)
+  const accent = useStore((s) => s.accent)
+
+  // One variable carries a retint into every rule that uses the accent.
+  useEffect(() => {
+    const root = document.documentElement
+    if (accent) root.style.setProperty('--accent', accent)
+    else root.style.removeProperty('--accent')
+  }, [accent])
+
   return (
-    <>
-      <Scene />
-      <Hud />
-      <Boot />
+    <div className="app">
+      <TopBar onBrief={() => send('Brief me.')} />
+      <MemoryPanel onAsk={send} />
+      <main className="stage">
+        <BrainMap />
+        <div className={`stage-blades${blades.length ? ' has-blades' : ''}`}>
+          <Blades />
+        </div>
+        <Presence />
+      </main>
+      <Conversation
+        onSend={send}
+        onHold={(down) => (down ? pressTalk() : releaseTalk())}
+        draft={draft}
+        setDraft={setDraft}
+      />
       <Diagnostics />
-      <Ignition onStart={() => void powerOn()} />
-    </>
+      <Pointer />
+      <GestureGuide live={gestures} />
+    </div>
   )
 }

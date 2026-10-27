@@ -1,8 +1,8 @@
 {
-  "name": "jarvis",
+  "name": "emrys",
   "private": true,
   "version": "0.0.0",
-  "description": "A browser voice assistant with an Iron Man holographic interface, driven by Claude Code through a small Node bridge.",
+  "description": "Emrys — a personal voice assistant for the Mac with a second brain, driven by Claude Code through an always-on local core.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -15,7 +15,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "bridge": "node bridge/server.mjs",
-    "bridge:writes": "JARVIS_ALLOW_WRITES=1 node bridge/server.mjs",
+    "bridge:writes": "EMRYS_ALLOW_WRITES=1 node bridge/server.mjs",
     "job": "node scripts/job.mjs",
     "service:install": "node scripts/service.mjs install",
     "service:status": "node scripts/service.mjs status",
@@ -32,6 +32,7 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.7.0",
     "@react-three/postprocessing": "^3.0.4",
+    "d3-force-3d": "^3.0.6",
     "dompurify": "^3.4.12",
     "framer-motion": "^12.43.0",
     "kokoro-js": "^1.2.1",

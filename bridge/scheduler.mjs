@@ -3,7 +3,7 @@
  *
  * This is the difference between an assistant and a chat window: at seven in
  * the morning the brief gets written whether or not the interface is open,
- * and it is waiting when you are. Each job is a procedure from ~/.jarvis/sops
+ * and it is waiting when you are. Each job is a procedure from ~/.emrys/sops
  * run headless through the Agent SDK, on the tier schedules.json names, with
  * the same context — who you are, the standing rules, what he remembers — as
  * the conversation has.
@@ -40,7 +40,7 @@ import { chromeServer } from './chrome.mjs'
 
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 
-const JOB_PROMPT = `You are JARVIS, a personal assistant, working in the background on
+const JOB_PROMPT = `You are Emrys, a personal assistant, working in the background on
 a scheduled job. Nobody is watching. The user will read what you write later, on
 screen, or hear you summarise it when they next talk to you.
 
@@ -179,9 +179,12 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
         // Same reason as the voice session: no settings files, so the gate
         // below is the only authority and no allow-rule can pre-empt it.
         settingSources: [],
+        // The built-ins a job reads with. The default set is a coding agent's,
+        // at thousands of tokens a request, and a job never edits a file.
+        tools: ['Task', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'ToolSearch'],
         mcpServers: {
           ...MCP_SERVERS,
-          jarvis_chrome: chromeServer({ allowWrites: false }),
+          emrys_chrome: chromeServer({ allowWrites: false }),
         },
         maxTurns: job.maxTurns,
         permissionMode: 'default',
@@ -222,13 +225,13 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
     const record = saveBriefing(job, result, { model: t.model })
     log(`[jobs] ${job.name} done in ${took}s${cost != null ? ` · $${cost.toFixed(3)}` : ''} → ${record.file}`)
     journal(`${job.title} finished in ${took}s → briefings/${basename(record.file)}.`)
-    notify('JARVIS', `${job.title} ready`, record.headline)
+    notify('Emrys', `${job.title} ready`, record.headline)
     return finish({ ok: true, record, cost, took })
   }
 
   log(`[jobs] ${job.name} failed after ${took}s: ${error}`)
   journal(`${job.title} failed: ${error}.`)
-  notify('JARVIS', `${job.title} failed`, String(error))
+  notify('Emrys', `${job.title} failed`, String(error))
   return finish({ ok: false, error, took })
 
   function finish(outcome) {
@@ -253,7 +256,7 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
  * inside it, so nothing a job wrote can be read as AppleScript.
  */
 function notify(title, subtitle, body) {
-  if (process.platform !== 'darwin' || process.env.JARVIS_NOTIFY === '0') return
+  if (process.platform !== 'darwin' || (process.env.EMRYS_NOTIFY ?? process.env.JARVIS_NOTIFY) === '0') return
   execFile(
     'osascript',
     [

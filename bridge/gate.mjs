@@ -1,11 +1,11 @@
 /**
- * The tool gate: what JARVIS may do without asking, what he must ask for, and
+ * The tool gate: what Emrys may do without asking, what he must ask for, and
  * what he may not do at all.
  *
  * It lives apart from server.mjs because more than the voice session needs it
  * now. The scheduler runs jobs with no one at the screen, and `npm run job`
  * runs one from a terminal; all three have to draw the same line between a
- * read and a write, or the background half of JARVIS would quietly be held to
+ * read and a write, or the background half of Emrys would quietly be held to
  * a different standard from the half you can hear.
  */
 
@@ -16,13 +16,13 @@ import { PATHS } from './home.mjs'
 
 /**
  * Read-only and generative tools run freely. Anything that writes to disk,
- * runs a shell, or changes the world goes to the policy in ~/.jarvis/policy.json
+ * runs a shell, or changes the world goes to the policy in ~/.emrys/policy.json
  * (see `verdict` at the bottom), which by default asks you first.
  *
- * JARVIS_ALLOW_WRITES=1 is the old blanket switch and still works: with it set,
+ * EMRYS_ALLOW_WRITES=1 is the old blanket switch and still works: with it set,
  * every write runs without asking. That is the demo mode, not the daily one.
  */
-export const ALLOW_WRITES = process.env.JARVIS_ALLOW_WRITES === '1'
+export const ALLOW_WRITES = (process.env.EMRYS_ALLOW_WRITES ?? process.env.Emrys_ALLOW_WRITES) === '1'
 
 /**
  * Both spellings of every renamed built-in are listed on purpose. The SDK
@@ -163,7 +163,7 @@ const CHROME_ACTS = new Set([
 
 /**
  * True when a tool can run without anyone being asked: a read, a generation,
- * JARVIS's own interface and notebook — or anything at all under ALLOW_WRITES.
+ * Emrys’s own interface and notebook — or anything at all under ALLOW_WRITES.
  * False means it changes something, and `verdict` decides what happens next.
  */
 export function decideTool(name) {
@@ -174,29 +174,33 @@ export function decideTool(name) {
   if (server) {
     // The HUD, and the interface controls beside it. Both run in this process
     // and draw on our own screen, so neither is something to withhold —
-    // without them JARVIS has no display at all. They also have to be named
+    // without them Emrys has no display at all. They also have to be named
     // here rather than left to the verb rules below, which read `ui_theme` as
     // a write and would hold the whole surface back behind ALLOW_WRITES.
-    if (server === 'jarvis' || server === 'jarvis_ui') return true
+    if (server === 'emrys' || server === 'emrys_ui') return true
 
-    // His own notebook: remembering a fact, reading back a briefing, starting
-    // one of his own scheduled jobs. All of it lands in ~/.jarvis and nowhere
-    // else, so there is nothing here to withhold.
-    if (server === 'jarvis_memory') return true
+    // His own notebook and the second brain: remembering a fact, writing a
+    // note, searching, reading back a briefing, starting one of his own jobs.
+    // All of it lands in ~/.emrys and nowhere else, so nothing is withheld.
+    if (server === 'emrys_brain') return true
+
+    // The Mac. Opening things, notifications, the clipboard and the volume run;
+    // AppleScript can drive any app on the machine, so it always asks.
+    if (server === 'emrys_mac') return mcpToolOf(name) !== 'applescript' || ALLOW_WRITES
 
     // The browser. The acting half is named here rather than left to the verb
     // rules, because those would get the reading half wrong: `chrome_navigate`
     // begins with no read verb and would fall to the write branch, which would
     // withhold the one tool the whole server is for. The acting tools are
     // always built now, and asking first is how they are held back.
-    if (server === 'jarvis_chrome') {
+    if (server === 'emrys_chrome') {
       return !CHROME_ACTS.has(mcpToolOf(name)) || ALLOW_WRITES
     }
 
     // The camera. Not withheld behind ALLOW_WRITES: looking changes nothing,
     // and the real gate is the browser's own camera permission plus an
     // indicator the user can see for as long as it is live.
-    if (server === 'jarvis_eyes') return true
+    if (server === 'emrys_eyes') return true
 
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
@@ -221,7 +225,7 @@ export function decideTool(name) {
  * sends it. Asking is the middle: he drafts, you see exactly what is about to
  * happen, you say yes.
  *
- * ~/.jarvis/policy.json holds three lists of tool-name patterns and a default:
+ * ~/.emrys/policy.json holds three lists of tool-name patterns and a default:
  *
  *   { "default": "ask", "allow": [], "ask": [], "deny": ["mcp__android__*"] }
  *
@@ -280,10 +284,10 @@ export function describeCall(name, input = {}) {
   const pick = (...keys) => keys.map((k) => input?.[k]).find((v) => typeof v === 'string' && v)
   const server = mcpServerOf(name)
   const title = server
-    ? `${server.replace(/^jarvis_/, '')} · ${mcpToolOf(name).replace(/^chrome_/, '').replace(/[_-]+/g, ' ')}`
+    ? `${server.replace(/^emrys_/, '')} · ${mcpToolOf(name).replace(/^chrome_/, '').replace(/[_-]+/g, ' ')}`
     : name
   const detail =
-    pick('command') ??
+    pick('command', 'script') ??
     pick('file_path', 'path', 'notebook_path') ??
     pick('text', 'value', 'url', 'to', 'subject', 'body', 'message') ??
     JSON.stringify(input)

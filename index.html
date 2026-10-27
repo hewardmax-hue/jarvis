@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#01060c" />
+    <meta name="theme-color" content="#0a0c11" />
 
     <!--
       Defence in depth behind the sanitiser in src/ui/Panels.tsx.
@@ -14,7 +14,7 @@
       address to a host of the page author's choosing, and it needs no script to
       fire.
 
-      JARVIS now shows images and video he found on the web, and `img-src` and
+      Emrys now shows images and video he found on the web, and `img-src` and
       `media-src` stay closed anyway — that is the entire point of the design.
       The sanitiser rewrites every remote URL to a bridge endpoint, and the
       bridge fetches it server-side and streams it back, so the browser only
@@ -54,18 +54,18 @@
         frame-src https://www.youtube-nocookie.com https://www.youtube.com https://player.vimeo.com http://localhost:8787 http://127.0.0.1:8787;
         img-src 'self' data: blob: http://localhost:8787 http://127.0.0.1:8787;
         script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:;
-        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-        font-src 'self' data: https://fonts.gstatic.com;
-        connect-src 'self' data: blob: https: ws: wss: http://localhost:8787 http://127.0.0.1:8787;
+        style-src 'self' 'unsafe-inline';
+        font-src 'self' data:;
+        connect-src 'self' data: blob: https: ws: wss: http://localhost:* http://127.0.0.1:*;
         worker-src 'self' blob:;
         media-src 'self' data: blob: http://localhost:8787 http://127.0.0.1:8787;
       "
     />
 
-    <title>J.A.R.V.I.S.</title>
+    <title>Emrys</title>
 
     <!--
-      What makes it installable as an app: Chrome offers "Install J.A.R.V.I.S."
+      What makes it installable as an app: Chrome offers "Install Emrys"
       for a page with a manifest like this one, and the result opens in its own
       window with its own icon in the Dock. Install it from the always-on
       interface at localhost:4180, which the core serves whether or not a
@@ -74,7 +74,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-title" content="JARVIS" />
+    <meta name="apple-mobile-web-app-title" content="Emrys" />
   </head>
   <body>
     <div id="root"></div>

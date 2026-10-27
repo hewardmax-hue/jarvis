@@ -1,11 +1,14 @@
 /**
- * ~/.jarvis — what JARVIS knows about you, and what he has done.
+ * ~/.emrys — what Emrys knows about you, and what he has done.
  *
  * Everything that makes him yours rather than a fresh chat lives in one folder
  * of plain files you can open, read and edit yourself:
  *
  *   about-me.md       who you are, what you do, what you care about
  *   rules.md          standing instructions he follows every time
+ *   notes/            your second brain's own notes — Markdown, Obsidian-friendly
+ *   conversations/    a dated record of what you and he said to each other
+ *   brain/            the second brain's index and its sources.json
  *   sops/*.md         procedures — the morning brief is one — run on a
  *                     schedule or on request
  *   memory/facts.md   things he has been told to remember, one per line
@@ -28,14 +31,20 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   renameSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 
-export const HOME = process.env.JARVIS_HOME ?? join(homedir(), '.jarvis')
+const DEFAULT_HOME = join(homedir(), '.emrys')
+/** Where this lived when he was called JARVIS. */
+const LEGACY_HOME = join(homedir(), '.jarvis')
+
+export const HOME = process.env.EMRYS_HOME ?? process.env.JARVIS_HOME ?? DEFAULT_HOME
 
 export const PATHS = {
   aboutMe: join(HOME, 'about-me.md'),
@@ -44,6 +53,10 @@ export const PATHS = {
   facts: join(HOME, 'memory', 'facts.md'),
   journal: join(HOME, 'memory', 'journal'),
   briefings: join(HOME, 'briefings'),
+  notes: join(HOME, 'notes'),
+  conversations: join(HOME, 'conversations'),
+  brain: join(HOME, 'brain'),
+  sources: join(HOME, 'brain', 'sources.json'),
   schedules: join(HOME, 'schedules.json'),
   policy: join(HOME, 'policy.json'),
   state: join(HOME, 'state.json'),
@@ -51,6 +64,44 @@ export const PATHS = {
 }
 
 const TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), 'home-template')
+
+/**
+ * Move ~/.jarvis to ~/.emrys, once.
+ *
+ * A rename, not a copy: two folders that drift apart is how memory gets lost.
+ * The old path is left as a link to the new one, so anything that still says
+ * ~/.jarvis — an editor tab, a habit — keeps working. The conversation to
+ * resume is dropped on the way across: it was held under the old persona, and
+ * Emrys should start his first conversation as himself. Everything he was told
+ * to remember comes with him.
+ *
+ * Safe to call from more than one place (the service installer runs it before
+ * launchd opens log files under the new path). Returns true if it moved.
+ */
+export function migrateHome() {
+  if (HOME !== DEFAULT_HOME || existsSync(DEFAULT_HOME)) return false
+  let legacy
+  try {
+    legacy = lstatSync(LEGACY_HOME)
+  } catch {
+    return false
+  }
+  if (!legacy.isDirectory() || legacy.isSymbolicLink()) return false
+  renameSync(LEGACY_HOME, DEFAULT_HOME)
+  try {
+    symlinkSync(DEFAULT_HOME, LEGACY_HOME)
+  } catch {
+    /* the link is a convenience */
+  }
+  try {
+    const state = JSON.parse(readFileSync(join(DEFAULT_HOME, 'state.json'), 'utf8'))
+    delete state.voice
+    writeFileSync(join(DEFAULT_HOME, 'state.json'), JSON.stringify(state, null, 2) + '\n')
+  } catch {
+    /* no state yet */
+  }
+  return true
+}
 
 /**
  * Create the folder on first run, from bridge/home-template.
@@ -61,6 +112,7 @@ const TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), 'home-template')
  */
 export function ensureHome() {
   const created = []
+  if (migrateHome()) created.push(`moved ${LEGACY_HOME} here`)
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const from = join(dir, entry.name)
@@ -75,7 +127,15 @@ export function ensureHome() {
     }
   }
   mkdirSync(HOME, { recursive: true })
-  for (const dir of [PATHS.sops, PATHS.journal, PATHS.briefings, PATHS.logs]) {
+  for (const dir of [
+    PATHS.sops,
+    PATHS.journal,
+    PATHS.briefings,
+    PATHS.logs,
+    PATHS.notes,
+    PATHS.conversations,
+    PATHS.brain,
+  ]) {
     mkdirSync(dir, { recursive: true })
   }
   walk(TEMPLATE)
@@ -196,44 +256,38 @@ export function remember(fact) {
 }
 
 /**
- * Search everything he has written down — facts, the last month of journals,
- * the last fortnight of briefings — for lines holding every word asked for.
- * Plain matching on purpose: it is fast, it is predictable, and the model is
- * perfectly able to try a second wording if the first finds nothing.
+ * Strike a remembered fact. Lines containing every word of `match` are removed
+ * — the model is told to quote the fact closely — and the count is returned so
+ * a vague request that would take out half the file can be refused instead.
  */
-export function recall(query, limit = 40) {
-  const words = String(query)
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length > 1)
-  if (!words.length) return []
-
-  const sources = [{ label: 'facts', path: PATHS.facts }]
-  const recent = (dir, days) => {
-    try {
-      return readdirSync(dir)
-        .filter((f) => f.endsWith('.md'))
-        .sort()
-        .slice(-days)
-        .reverse()
-        .map((f) => ({ label: `${relative(HOME, dir)}/${f}`, path: join(dir, f) }))
-    } catch {
-      return []
-    }
+export function forget(match, { dryRun = false } = {}) {
+  const words = String(match ?? '').toLowerCase().split(/\s+/).filter((w) => w.length > 2)
+  if (!words.length) return { removed: [], kept: 0 }
+  const lines = readText(PATHS.facts, 1_000_000).split('\n')
+  const removed = []
+  const kept = lines.filter((line) => {
+    const hit = line.startsWith('- ') && words.every((w) => line.toLowerCase().includes(w))
+    if (hit) removed.push(line.replace(/^- (\[[\d-]+\] )?/, ''))
+    return !hit
+  })
+  if (!dryRun && removed.length && removed.length <= 3) {
+    writeFileSync(PATHS.facts, kept.join('\n'))
   }
-  sources.push(...recent(PATHS.journal, 31), ...recent(PATHS.briefings, 14))
+  return { removed, kept: kept.length }
+}
 
-  const hits = []
-  for (const { label, path } of sources) {
-    for (const line of readText(path, 200_000).split('\n')) {
-      const lower = line.toLowerCase()
-      if (words.every((w) => lower.includes(w))) {
-        hits.push(`${label}: ${line.trim()}`)
-        if (hits.length >= limit) return hits
-      }
-    }
-  }
-  return hits
+/**
+ * One line of the conversation, in today's file. The second brain indexes
+ * these, which is how "what did we decide about the invoice last week" finds
+ * the answer: what was said is remembered as plainly as what was written.
+ */
+export function logConversation(who, text) {
+  const clean = String(text ?? '').replace(/\s+/g, ' ').trim()
+  if (!clean) return
+  mkdirSync(PATHS.conversations, { recursive: true })
+  const file = join(PATHS.conversations, `${localDate()}.md`)
+  if (!existsSync(file)) appendFileSync(file, `# Conversations, ${spokenNow().split(',')[0]}\n\n`)
+  appendFileSync(file, `- ${localTime()} **${who}:** ${clean.slice(0, 4000)}\n`)
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +400,16 @@ export function contextBlock() {
 
   const today = readText(join(PATHS.journal, `${localDate()}.md`), 2500, 'tail')
   if (today) parts.push(`## Today's log\n\n${today.replace(/^# .*\n/, '').trim()}`)
+
+  // The tail of today's conversation, so a fresh session — after a restart, or
+  // after a long conversation is continued in a new one — picks up mid-thread.
+  const said = readText(join(PATHS.conversations, `${localDate()}.md`), 2200, 'tail')
+  if (said) {
+    parts.push(
+      `## Earlier today, between you\n\nThe most recent lines of today's conversation.\n\n` +
+        said.replace(/^# .*\n/, '').trim(),
+    )
+  }
 
   const sops = listSops()
   if (sops.length) {

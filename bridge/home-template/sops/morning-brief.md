@@ -1,8 +1,8 @@
 # Morning brief
 
 <!--
-  A procedure JARVIS follows, step by step. Scheduled in schedules.json, or run
-  on request ("Jarvis, run the morning brief"). Edit it the way you would edit
+  A procedure Emrys follows, step by step. Scheduled in schedules.json, or run
+  on request ("Emrys, run the morning brief"). Edit it the way you would edit
   instructions for a person: add a source, drop a section, change the order.
 -->
 
@@ -19,7 +19,7 @@ mention it in the brief as something the user may want to look at.
 
 1. **Context.** Read "About the user" for where they are, what they do and what
    they follow. If it is empty, write a general brief and add one line under
-   Gaps saying that filling in ~/.jarvis/about-me.md will make this personal.
+   Gaps saying that filling in ~/.emrys/about-me.md will make this personal.
 2. **Calendar.** Prefer a calendar connector if you have one — search your
    tools for "calendar" — and list today's events: time, title, who. Failing
    that, if `chrome_status` reports the browser reachable, open

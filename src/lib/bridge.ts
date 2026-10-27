@@ -12,7 +12,7 @@ import { BRIDGE_WS_URL } from '../config'
  * The bridge holds one Claude Agent SDK query per connection, and keeps its
  * session id on disk so a reconnect within a few hours picks the same
  * conversation back up. Past that window a reconnect starts fresh, and the
- * transcript on screen no longer matches what JARVIS remembers — which is why
+ * transcript on screen no longer matches what Emrys remembers — which is why
  * the reconnect below is loud rather than invisible: `watchConnection` says
  * which of the two happened.
  */
@@ -42,6 +42,39 @@ type Frame = {
   tool?: string
   expiresAt?: number
   items?: Notice[]
+  source?: string
+  hits?: RecallHit[]
+  ids?: string[]
+  tier?: string
+  version?: number
+  brain?: number
+}
+
+/** An item from the second brain that matched what was just said. */
+export type RecallHit = { id: string; title: string; kind: string; hub?: string; score?: number }
+
+/**
+ * Everything the second brain tells the interface.
+ *
+ *   version — the map changed; fetch it again
+ *   recall  — these items were looked up for the question just asked
+ *   focus   — Emrys searched, opened or wrote these; fly to them
+ *   tier    — the conversation moved to another model
+ */
+export type BrainEvent =
+  | { type: 'version'; version: number }
+  | { type: 'recall'; ask?: string; hits: RecallHit[] }
+  | { type: 'focus'; ids: string[]; mode: 'search' | 'open' | 'new' }
+  | { type: 'tier'; tier: string }
+
+let onBrain: ((e: BrainEvent) => void) | null = null
+export function watchBrain(fn: (e: BrainEvent) => void) {
+  onBrain = fn
+}
+
+/** Move the conversation to another model tier: 'fast', 'voice' or 'deep'. */
+export function setTier(tier: string) {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'model', tier }))
 }
 
 /** An action waiting for the user's yes — see requestApproval in the bridge. */
@@ -92,6 +125,8 @@ export function watchPanels(fn: (panel: Panel) => void) {
 export type CaptureRequest = {
   /** 'look' for a single frame, 'watch' for a grid over time. */
   mode: 'look' | 'watch'
+  /** The camera, or the screen the user is sharing. */
+  source: 'camera' | 'screen'
   reason: string
   seconds: number
   /** 'now' records forward; 'past' reads the rolling buffer. */
@@ -112,7 +147,7 @@ export function watchBlades(fn: (blade: Blade) => void) {
 }
 
 /** Commands that redress the interface — theme, reactor, orbits, effects. Same
- *  out-of-band route as panels: JARVIS issues them while he is still mid-answer
+ *  out-of-band route as panels: Emrys issues them while he is still mid-answer
  *  so the change is on screen as he says it, which means they cannot ride back
  *  on the turn's result. The op/args pair stays untyped here on purpose — this
  *  module is a transport, and the store is where the shape is decided. */
@@ -227,6 +262,8 @@ function dispatch(ws: WebSocket) {
         .map((s) => (typeof s === 'string' ? s : (s.name ?? '')))
         .filter(Boolean)
       onServers?.(servers)
+      if (msg.tier) onBrain?.({ type: 'tier', tier: msg.tier })
+      if (typeof msg.brain === 'number') onBrain?.({ type: 'version', version: msg.brain })
       firstReady.resolve()
       if (announceReconnect && msg.resumed !== undefined) {
         announceReconnect = false
@@ -246,6 +283,15 @@ function dispatch(ws: WebSocket) {
       else answerApproval(req.id, false)
     } else if (msg.type === 'approval_closed' && msg.id) {
       onApproval?.close(msg.id)
+    } else if (msg.type === 'brain' && typeof msg.version === 'number') {
+      onBrain?.({ type: 'version', version: msg.version })
+    } else if (msg.type === 'recall' && Array.isArray(msg.hits)) {
+      onBrain?.({ type: 'recall', ask: msg.ask, hits: msg.hits })
+    } else if (msg.type === 'brain_focus' && Array.isArray(msg.ids)) {
+      const mode = msg.mode === 'open' || msg.mode === 'new' ? msg.mode : 'search'
+      onBrain?.({ type: 'focus', ids: msg.ids, mode })
+    } else if (msg.type === 'tier' && msg.tier) {
+      onBrain?.({ type: 'tier', tier: msg.tier })
     } else if (msg.type === 'notices') {
       onNotices?.(Array.isArray(msg.items) ? msg.items : [])
     } else if (msg.type === 'panel' && msg.panel) {
@@ -267,6 +313,7 @@ function dispatch(ws: WebSocket) {
         // hangs until the idle timer notices.
         onCapture({
           mode: msg.mode === 'watch' ? 'watch' : 'look',
+          source: msg.source === 'screen' ? 'screen' : 'camera',
           reason: msg.reason ?? '',
           seconds: Math.max(2, Math.min(15, Number(msg.seconds) || 6)),
           when: msg.when === 'past' ? 'past' : 'now',
@@ -309,7 +356,7 @@ function connect(): Promise<WebSocket> {
 
     const timer = setTimeout(() => {
       ws.close()
-      settle(new Error('Bridge not responding — is `npm run bridge` running?'))
+      settle(new Error('Emrys’s core is not responding — check it with `npm run service:status`.'))
     }, 6000)
 
     ws.onopen = () => {
@@ -337,8 +384,8 @@ function connect(): Promise<WebSocket> {
        */
       settle(
         new Error(
-          `Cannot reach the bridge at ${BRIDGE_WS_URL}. Either it is not ` +
-            'running (start it with `npm start`), or this page is on a port it ' +
+          `Cannot reach Emrys’s core at ${BRIDGE_WS_URL}. Either it is not ` +
+            'running (`npm run service:install` starts it for good), or this page is on a port it ' +
             `refuses — it accepts localhost:5173-5199 and 4173-4199, and this ` +
             `page is on ${location.port || '80'}.`,
         ),
@@ -359,7 +406,7 @@ function connect(): Promise<WebSocket> {
   return connecting
 }
 
-/** Open the socket early so the first "Hey Jarvis" isn't waiting on a handshake. */
+/** Open the socket early so the first "Emrys" isn't waiting on a handshake. */
 export async function warmBridge(): Promise<void> {
   await connect()
   // Don't block startup if the bridge never announces — the dispatcher fills
@@ -395,7 +442,7 @@ export async function ask(
    * Two concurrent turns genuinely would corrupt each other — both listeners
    * see every delta, and the first 'done' resolves both with the other's text —
    * but refusing the new one was the wrong way to prevent that. It surfaced as
-   * "JARVIS is already answering", which is a sentence about this module's
+   * "Emrys is already answering", which is a sentence about this module's
    * bookkeeping rather than about anything the user did, and it contradicts the
    * premise the whole app is built on: say something and it becomes the turn.
    *
@@ -470,7 +517,7 @@ export async function ask(
     const arm = () => {
       clearTimeout(timer)
       timer = window.setTimeout(() => {
-        fail(new Error('The bridge went quiet — that turn was lost, sir.'))
+        fail(new Error('No reply came back — that one was lost. Try again.'))
       }, IDLE_TIMEOUT_MS)
     }
 
@@ -526,10 +573,10 @@ export async function ask(
     }
 
     const onClose = () => {
-      fail(new Error('The bridge disconnected mid-answer — that session is gone.'))
+      fail(new Error('The connection dropped mid-answer. Reconnecting.'))
     }
     const onError = () => {
-      fail(new Error('The connection to the bridge failed.'))
+      fail(new Error('The connection to Emrys’s core failed.'))
     }
 
     pending = { finish }
@@ -548,7 +595,7 @@ export async function ask(
 }
 
 /**
- * Cut JARVIS off mid-answer.
+ * Cut Emrys off mid-answer.
  *
  * Tells the bridge to stop, then settles the in-flight turn here rather than
  * waiting for a 'done' that a barge-in may never produce. Whatever he had
@@ -571,5 +618,6 @@ export function interrupt(): void {
 function prettyToolName(raw: string): string {
   if (!raw.startsWith('mcp__')) return raw
   const [, server, ...rest] = raw.split('__')
-  return `${server} · ${rest.join(' ').replace(/_/g, ' ')}`
+  const where = server.replace(/^emrys_?/, '').replace(/^claude_ai_/, '').replace(/_/g, ' ')
+  return `${where || 'emrys'} · ${rest.join(' ').replace(/_/g, ' ')}`
 }

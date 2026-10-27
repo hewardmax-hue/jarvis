@@ -17,15 +17,22 @@ import { BACKEND, BRIDGE_HTTP_URL, env } from '../config'
  * is not a path worth encouraging, so direct mode is treated as browser-only.
  */
 
+export type LocalVoice = { id: string; label: string; accent: string }
+
 export type Capabilities = {
   /** ElevenLabs speech-to-text (Scribe) is reachable via the bridge. */
   stt: boolean
   /** ElevenLabs text-to-speech is reachable via the bridge. */
   tts: boolean
+  /** The core's own neural voice is loaded and answering /speak. */
+  local: boolean
+  /** The voices it offers, and the one it uses unless told otherwise. */
+  voices: LocalVoice[]
+  defaultVoice: string
 }
 
 /** Browser-only until the probe says otherwise. Safe default: the app works. */
-let current: Capabilities = { stt: false, tts: false }
+let current: Capabilities = { stt: false, tts: false, local: false, voices: [], defaultVoice: '' }
 let probed = false
 
 /** The last known capabilities. Read synchronously by the voice and speech
@@ -40,14 +47,14 @@ export function capabilitiesProbed(): boolean {
 
 /**
  * Ask the bridge what it can do, once. Called during the boot sequence, before
- * the voice loop starts, so the first "Hey Jarvis" already uses the right
+ * the voice loop starts, so the first "Emrys" already uses the right
  * engine. Never throws: a failed probe simply leaves the browser fallback in
  * place, which is the correct behaviour when the bridge is unreachable.
  */
 export async function probeCapabilities(): Promise<Capabilities> {
   if (BACKEND !== 'bridge') {
     // No bridge to ask. Direct mode has no server-side speech, so browser only.
-    current = { stt: false, tts: false }
+    current = { stt: false, tts: false, local: false, voices: [], defaultVoice: '' }
     probed = true
     return current
   }
@@ -56,16 +63,40 @@ export async function probeCapabilities(): Promise<Capabilities> {
       signal: AbortSignal.timeout(3000),
     })
     if (res.ok) {
-      const h = (await res.json()) as { stt?: boolean; tts?: boolean }
-      current = { stt: Boolean(h.stt), tts: Boolean(h.tts) }
+      const h = (await res.json()) as {
+        stt?: boolean
+        tts?: boolean
+        voice?: { ready?: boolean; voices?: LocalVoice[]; default?: string }
+      }
+      current = {
+        stt: Boolean(h.stt),
+        tts: Boolean(h.tts),
+        local: Boolean(h.voice?.ready),
+        voices: h.voice?.voices ?? [],
+        defaultVoice: h.voice?.default ?? '',
+      }
     }
   } catch {
     // Bridge down or slow — stay on the browser engines rather than blocking
     // boot on a health check that is only an optimisation.
   }
   probed = true
+  // The first start of the core downloads the voice model; keep asking until
+  // it is up, and switch to it the moment it is.
+  if (!current.local && BACKEND === 'bridge' && !retrying) {
+    retrying = true
+    let tries = 0
+    const again = window.setInterval(() => {
+      tries++
+      void probeCapabilities().then((c) => {
+        if (c.local || tries > 60) window.clearInterval(again)
+      })
+    }, 5000)
+  }
   return current
 }
+
+let retrying = false
 
 /** A short human label for the HUD: what voice stack is actually in play. */
 export function engineLabel(): string {

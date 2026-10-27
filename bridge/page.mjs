@@ -5,7 +5,7 @@ import { fetchText, peek, proxyError } from './net.mjs'
  * Showing a web page on the display.
  *
  * The problem this solves is specific and, until now, unsolvable from the
- * browser side. JARVIS finds an article and wants to put it on screen. Three
+ * browser side. Emrys finds an article and wants to put it on screen. Three
  * separate mechanisms stop him:
  *
  *   1. `X-Frame-Options: DENY` / `frame-ancestors` — most publishers refuse to
@@ -332,23 +332,23 @@ function toReader(html, pageUrl, bridgeOrigin) {
   html,body { margin:0; background:transparent; }
   body {
     font: 400 15px/1.62 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
-    color: #cfe9ee; padding: 18px 22px 40px;
+    color: #d6dbe6; padding: 22px 26px 44px;
     -webkit-font-smoothing: antialiased;
   }
   .rd-src { font: 500 10px/1 ui-monospace, monospace; letter-spacing:.16em;
-            text-transform:uppercase; color:#5fd8e0; opacity:.8; }
-  .rd-title { font-size: 25px; line-height:1.2; font-weight:600; color:#eafcff;
+            text-transform:uppercase; color:#9fb4ff; opacity:.85; }
+  .rd-title { font-size: 25px; line-height:1.2; font-weight:600; color:#f0f2f7;
               margin: 10px 0 18px; }
-  .rd-h { font-size: 16px; color:#eafcff; margin: 22px 0 8px; font-weight:600; }
+  .rd-h { font-size: 16px; color:#f0f2f7; margin: 22px 0 8px; font-weight:600; }
   .rd-p { margin: 0 0 14px; }
   .rd-li { margin: 0 0 7px 18px; }
-  .rd-q { margin: 16px 0; padding-left: 14px; border-left: 2px solid #19c4c4;
-          color:#9fdbe2; font-style: italic; }
+  .rd-q { margin: 16px 0; padding-left: 14px; border-left: 2px solid #9fb4ff;
+          color:#b9c0d0; font-style: italic; }
   img { max-width:100%; height:auto; display:block; border-radius:4px;
         margin: 14px 0; }
   .rd-lead { margin-bottom: 18px; }
   ::-webkit-scrollbar { width: 9px; }
-  ::-webkit-scrollbar-thumb { background: #19c4c455; border-radius: 9px; }
+  ::-webkit-scrollbar-thumb { background: #ffffff22; border-radius: 9px; }
 </style></head><body>
 <div class="rd-src">${escape(host)}</div>
 <h1 class="rd-title">${escape(title)}</h1>
@@ -374,8 +374,8 @@ function toLive(html, pageUrl) {
   out = out.replace(/<base\b[^>]*>/gi, '')
   const injected =
     `<base href="${escape(pageUrl)}">` +
-    '<style>html{background:#06101a;color-scheme:dark}' +
-    '::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:#19c4c455;border-radius:9px}</style>'
+    '<style>html{background:#12151d;color-scheme:dark}' +
+    '::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:#ffffff22;border-radius:9px}</style>'
   if (/<head\b[^>]*>/i.test(out)) {
     out = out.replace(/<head\b[^>]*>/i, (h) => `${h}${injected}`)
   } else {

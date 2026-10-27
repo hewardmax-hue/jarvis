@@ -12,30 +12,37 @@
  * The voice session reaches the deep tier through the `deep-work` subagent
  * below; scheduled jobs name their tier in schedules.json.
  *
- * Every tier can be overridden from the environment. JARVIS_MODEL and
- * JARVIS_EFFORT keep their old meaning — the conversation's model and effort —
- * so an existing setup that pins them behaves exactly as before.
+ * Every tier can be overridden from the environment: EMRYS_MODEL and
+ * EMRYS_EFFORT for the conversation, EMRYS_MODEL_DEEP / _FAST and their
+ * _EFFORT partners for the others. The old JARVIS_* names still work.
  *
- * Effort for the voice tier is 'medium': it reasons and reaches for tools
- * noticeably more than 'low' while still answering inside the window a spoken
- * conversation tolerates. Raise it when quality matters more than pace; drop
- * it to 'low' when filming and every second of dead air shows.
+ * Effort for the conversation is 'low'. Measured on this machine, time to the
+ * first spoken word is dominated by the request itself, not the model's
+ * thinking, and 'low' keeps a voice turn from wandering off to reason about a
+ * greeting. Anything that genuinely needs thought goes to the deep tier.
+ *
+ * The user can move the conversation between tiers from the interface — or by
+ * asking — and that choice is remembered in state.json.
  */
 
 const env = process.env
+const pick = (name) => env[`EMRYS_${name}`] ?? env[`JARVIS_${name}`]
 
 export const TIERS = {
   fast: {
-    model: env.JARVIS_MODEL_FAST ?? 'claude-haiku-5-5',
-    effort: env.JARVIS_EFFORT_FAST ?? 'low',
+    label: 'Quick',
+    model: pick('MODEL_FAST') ?? 'claude-haiku-5-5',
+    effort: pick('EFFORT_FAST') ?? 'low',
   },
   voice: {
-    model: env.JARVIS_MODEL ?? 'claude-sonnet-5-5',
-    effort: env.JARVIS_EFFORT ?? 'medium',
+    label: 'Balanced',
+    model: pick('MODEL') ?? 'claude-sonnet-5-5',
+    effort: pick('EFFORT') ?? 'low',
   },
   deep: {
-    model: env.JARVIS_MODEL_DEEP ?? 'claude-opus-5-5',
-    effort: env.JARVIS_EFFORT_DEEP ?? 'high',
+    label: 'Deep',
+    model: pick('MODEL_DEEP') ?? 'claude-opus-5-5',
+    effort: pick('EFFORT_DEEP') ?? 'high',
   },
 }
 
@@ -60,7 +67,7 @@ export const AGENTS = {
       'Give it the whole request and what the user wants back. It returns a ' +
       'written result; you summarise it aloud and put the detail on a blade.',
     prompt:
-      'You are the deep-work half of JARVIS, a personal assistant. The voice ' +
+      'You are the deep-work half of Emrys, a personal assistant. The voice ' +
       'half has handed you a request that needs care. Do the work thoroughly ' +
       'with the tools you have, then return a clear written result: the answer ' +
       'first, then the supporting detail, then sources as short names. Write ' +
