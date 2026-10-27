@@ -1,7 +1,7 @@
 # About me
 
 <!--
-  JARVIS reads this file at the start of every conversation and every job.
+  Emrys reads this file at the start of every conversation and every job.
   Write it the way you would brief a new chief of staff: short, specific,
   true. Anything under a heading counts; these comments are ignored.
   Until something is written here, he works without it.

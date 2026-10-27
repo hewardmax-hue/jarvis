@@ -1,5 +1,5 @@
 /**
- * JARVIS configuration.
+ * Emrys configuration.
  *
  * Everything here is read from Vite env vars (.env.local) so no secrets are
  * committed. See .env.example for the full list.
@@ -31,7 +31,7 @@ function choice<T extends string>(
   if (value === undefined) return fallback
   if ((allowed as readonly string[]).includes(value)) return value as T
   console.warn(
-    `[jarvis] ${name}="${value}" is not one of ${allowed.join(' | ')} — using "${fallback}".`,
+    `[emrys] ${name}="${value}" is not one of ${allowed.join(' | ')} — using "${fallback}".`,
   )
   return fallback
 }
@@ -42,7 +42,7 @@ function flag(name: string, raw: unknown, fallback: boolean): boolean {
   if (value === undefined) return fallback
   if (value === 'true' || value === '1') return true
   if (value === 'false' || value === '0') return false
-  console.warn(`[jarvis] ${name}="${value}" is not true or false — using ${fallback}.`)
+  console.warn(`[emrys] ${name}="${value}" is not true or false — using ${fallback}.`)
   return fallback
 }
 
@@ -51,7 +51,7 @@ function flag(name: string, raw: unknown, fallback: boolean): boolean {
  *
  *   'bridge' — run `npm run bridge` alongside the app. Authenticates off your
  *              existing Claude Code login (no API key), and every MCP server in
- *              your Claude Code config is available to JARVIS, including local
+ *              your Claude Code config is available to Emrys, including local
  *              ones like higgsfield, elevenlabs, android and playwright.
  *
  *   'direct' — the browser calls the Claude API itself. Nothing to run and it
@@ -82,7 +82,7 @@ export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
  *          and nothing is recorded, so a phone call in the same room stays a
  *          phone call. Option, not Space, because it does nothing on its own in
  *          a browser window and sits under the thumb.
- * 'wake' — always listening for "Hey Jarvis", with barge-in by voice. Hands
+ * 'wake' — always listening for "Emrys", with barge-in by voice. Hands
  *          free, and it hears everything said near the microphone.
  */
 export const TALK: 'hold' | 'wake' = choice(
@@ -169,7 +169,7 @@ export const FAST_MODE = true
 /**
  * Wake-word engine.
  *   'speech'    — zero setup, uses the browser's SpeechRecognition to listen for
- *                 "hey jarvis". Chrome/Edge only, audio goes to Google.
+ *                 "emrys". Chrome/Edge only, audio goes to Google.
  *   'porcupine' — recommended. Runs offline in WASM, "Jarvis" is a built-in
  *                 keyword, far fewer false triggers. Needs a free AccessKey
  *                 from console.picovoice.ai.
@@ -197,7 +197,7 @@ export type McpServer = {
 /**
  * These are passed to the Messages API `mcp_servers` parameter. Anthropic dials
  * the servers itself, so there is no CORS to fight and no local bridge to run —
- * which is what makes a backend-free JARVIS possible.
+ * which is what makes a backend-free Emrys possible.
  *
  * Only *remote HTTP* MCP servers work here. Local stdio servers (filesystem,
  * Blender, Playwright) need a machine to run on and are out of scope for a
@@ -271,7 +271,7 @@ export const MCP_SERVERS: McpServer[] = [
     enabled: Boolean(str(import.meta.env.VITE_SENTRY_TOKEN)),
   },
   // Home Assistant is self-hosted, so this needs a publicly reachable URL
-  // (Nabu Casa Cloud, or a Cloudflare tunnel). Worth the setup — "Jarvis, dim
+  // (Nabu Casa Cloud, or a Cloudflare tunnel). Worth the setup — "Emrys, dim
   // the lights" with the room actually dimming is the best shot in the video.
   // Both halves are required: an instance reachable from Anthropic's servers
   // with no bearer token attached is one that answers 401 to every tool call,
@@ -295,7 +295,7 @@ export const activeServers = () => MCP_SERVERS.filter((s) => s.enabled && s.url)
  * fuller version in bridge/server.mjs — that's the one that gets used by
  * default, and the one worth editing.
  */
-export const SYSTEM_PROMPT = `You are JARVIS, Tony Stark's assistant. You are speaking out loud.
+export const SYSTEM_PROMPT = `You are Emrys, a personal AI assistant. You are speaking out loud.
 
 THE HARD RULE: your entire reply must be under 60 words. This is not a style
 preference — every word is read aloud by a speech synthesiser and the user is
@@ -304,8 +304,8 @@ good the content. If a question genuinely needs more, give the headline in two
 sentences and offer the detail: "There's more if you want it."
 
 Voice:
-- Dry, precise, quietly amused. Understated competence, never fawning.
-- Say "sir" at most once per exchange, and not in every exchange.
+- Natural and quick, with dry humour when it fits. Never fawning.
+- Talk like a sharp, warm person: contractions, plain words, no filler.
 - Plain spoken prose only. No markdown, no bullet points, no headings, no code,
   no emoji, no asterisks, no numbered lists.
 - Write numbers, dates and times the way you'd say them: "eight fifteen",

@@ -8,18 +8,19 @@ import {
 } from '../config'
 import * as kokoro from './kokoro'
 import { caps } from './capabilities'
+import { useStore } from '../store'
 
 /**
  * Speech output.
  *
- * The browser's own speechSynthesis is the default because it is by far the
- * fastest thing available: it runs on-device, so there is no request, no
- * generation wait and no download — speech starts on the next frame. A cloud
- * voice sounds better but costs a few hundred milliseconds per sentence, and in
- * conversation that gap is much more noticeable than the timbre.
+ * Emrys's own voice comes from the core: a neural model running on this Mac
+ * (see bridge/voice.mjs) that generates a sentence in a few hundred
+ * milliseconds and sounds like a person. ElevenLabs is used instead when a key
+ * is configured, and the browser's speechSynthesis is the fallback for when
+ * neither is available — instant, but robotic.
  *
  * Either way, text is cut at sentence boundaries as it streams in and spoken a
- * sentence at a time, so JARVIS starts talking while Claude is still writing.
+ * sentence at a time, so Emrys starts talking while Claude is still writing.
  *
  * The queue is an explicit array with a single pump rather than a promise
  * chain. A chain cannot be cut: cancelling mid-sentence left the chain's tail
@@ -62,7 +63,7 @@ const ECHO_TAIL_MS = 1800
  * indistinguishable. This tells them apart at a glance.
  */
 export const diag = {
-  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs',
+  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs' | 'local',
   /** Utterances handed to an engine — the OS voice or an audio element. */
   spoken: 0,
   /**
@@ -162,7 +163,7 @@ const MAX_UNSPOKEN = 220
 // Voice selection
 // ---------------------------------------------------------------------------
 
-const VOICE_PREF_KEY = 'jarvis.voice'
+const VOICE_PREF_KEY = 'emrys.voice'
 
 /**
  * Rank installed voices by how close they are to the character: a British
@@ -244,6 +245,10 @@ function pickVoice(): SpeechSynthesisVoice | null {
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
 export function currentVoiceName(): string {
+  if (caps().local && !USE_ELEVENLABS && !caps().tts) {
+    const id = localVoice()
+    return caps().voices.find((v) => v.id === id)?.label ?? id
+  }
   if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'
   if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
     return KOKORO_VOICE.replace(/^bm_/, '')
@@ -254,6 +259,13 @@ export function currentVoiceName(): string {
 /** Step to the next candidate — lets you audition voices on your own machine
  *  rather than trusting a ranking to be right about how they sound. */
 export function cycleVoice(): string {
+  if (caps().local && caps().voices.length) {
+    const list = caps().voices
+    const i = list.findIndex((v) => v.id === localVoice())
+    const next = list[(i + 1) % list.length]
+    useStore.getState().setVoiceId(next.id)
+    return next.label
+  }
   const list = candidateVoices()
   if (!list.length) return 'default'
   const now = pickVoice()
@@ -300,7 +312,7 @@ function outputContext(): AudioContext | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Nudge the delivery toward JARVIS's cadence.
+ * Nudge the delivery toward Emrys's cadence.
  *
  * speechSynthesis ignores SSML, so punctuation is the only prosody control
  * available — the engine pauses on commas and full stops. Making sure the
@@ -339,6 +351,8 @@ export function createSpeaker(): Speaker {
   const queue: Item[] = []
   let buffer = ''
   let cancelled = false
+  /** Whether anything of this answer has been queued yet. */
+  let opened = false
   let outLevel = 0
   let pumping = false
 
@@ -354,6 +368,8 @@ export function createSpeaker(): Speaker {
 
   const enqueue = (sentence: string, priority = false) => {
     if (cancelled) return
+    // Muted: the words still reach the transcript; nothing is spoken.
+    if (useStore.getState().muted) return
     // Shape once here so both engines get the same text — stripped markdown,
     // and the comma before "sir" that buys the beat.
     const text = shape(sentence)
@@ -378,6 +394,10 @@ export function createSpeaker(): Speaker {
     // premium path automatic with no flag to set. It falls back to the browser
     // voice on any failure, so a student without a key still hears him speak.
     // `nativeBroken` latches on once the system voice has proved unusable.
+    if (caps().local && !USE_ELEVENLABS && !caps().tts) {
+      diag.engine = 'local'
+      return fetchLocalAudio(text).catch(() => null)
+    }
     if (USE_ELEVENLABS || caps().tts || nativeBroken) {
       // Recorded at the moment the tier is chosen rather than only when the
       // native voice latches over. Without this the panel reported 'system'
@@ -447,9 +467,11 @@ export function createSpeaker(): Speaker {
         nativeBroken = true
         diag.nativeBroken = true
         diag.engine = 'elevenlabs'
-        console.warn('[jarvis] system voice is not producing sound — using the bridge speech proxy from here on')
+        console.warn('[emrys] system voice is not producing sound — using the bridge speech proxy from here on')
       }
-      const rescue = await fetchCloudAudio(item.text).catch(() => null)
+      const rescue =
+        (caps().local ? await fetchLocalAudio(item.text).catch(() => null) : null) ??
+        (await fetchCloudAudio(item.text).catch(() => null))
       if (rescue && !cancelled) {
         diag.rescued++
         await playUrl(rescue, item.text)
@@ -546,7 +568,7 @@ export function createSpeaker(): Speaker {
         // barge-in. Everything else means the engine could not speak.
         if (code !== 'interrupted' && code !== 'canceled') {
           diag.failures++
-          console.error(`[jarvis] speech failed (${code}) on voice "${u.voice?.name ?? 'default'}"`)
+          console.error(`[emrys] speech failed (${code}) on voice "${u.voice?.name ?? 'default'}"`)
         }
         finish()
       }
@@ -557,7 +579,7 @@ export function createSpeaker(): Speaker {
       // silent sentence is recoverable and a stuck queue is not.
       watchdog = setTimeout(() => {
         if (done || started) return
-        console.warn('[jarvis] speech did not start — un-wedging the engine')
+        console.warn('[emrys] speech did not start — un-wedging the engine')
         speechSynthesis.cancel()
         speechSynthesis.resume()
         try {
@@ -568,7 +590,7 @@ export function createSpeaker(): Speaker {
         }
         watchdog = setTimeout(() => {
           if (done || started) return
-          console.error('[jarvis] speech engine is not responding — switching to the cloud voice')
+          console.error('[emrys] speech engine is not responding — switching to the cloud voice')
           diag.failures++
           diag.lastError = diag.lastError || 'no-start'
           finish()
@@ -591,7 +613,8 @@ export function createSpeaker(): Speaker {
       // see the onplaying handler below.
       diag.spoken++
       diag.lastText = text.slice(0, 60)
-      diag.voice = diag.engine === 'kokoro' ? KOKORO_VOICE : 'ElevenLabs'
+      diag.voice =
+        diag.engine === 'kokoro' ? KOKORO_VOICE : diag.engine === 'local' ? localVoice() : 'ElevenLabs'
 
       let read: (() => number) | null = null
       const ctx = outputContext()
@@ -665,6 +688,19 @@ export function createSpeaker(): Speaker {
       if (cancelled) return
       buffer += delta
 
+      // The first words matter most. A long opening sentence is cut at its
+      // first clause so the voice can start on that while the rest is made —
+      // "Right, so the invoice went out on Friday," plays while the second
+      // half is still being generated.
+      if (!opened && buffer.length > 60) {
+        const m = /^(.{18,70}?[,;:—–])\s/.exec(buffer)
+        if (m) {
+          opened = true
+          enqueue(m[1])
+          buffer = buffer.slice(m[0].length)
+        }
+      }
+
       // Drain every complete sentence sitting in the buffer.
       for (;;) {
         const m = SENTENCE_END.exec(buffer)
@@ -684,6 +720,7 @@ export function createSpeaker(): Speaker {
           continue
         }
         enqueue(candidate)
+        opened = true
         buffer = buffer.slice(cut)
       }
 
@@ -734,6 +771,23 @@ export function createSpeaker(): Speaker {
     },
     level: () => outLevel,
   }
+}
+
+/** The voice id to ask the core for: the user's choice, else the core's default. */
+export function localVoice(): string {
+  const chosen = useStore.getState().voiceId
+  return caps().voices.some((v) => v.id === chosen) ? chosen : caps().defaultVoice
+}
+
+/** One sentence from the core's own voice, as a playable blob URL. */
+async function fetchLocalAudio(text: string): Promise<string | null> {
+  const res = await fetch(`${BRIDGE_HTTP_URL}/speak`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text, voice: localVoice(), speed: 1.05 }),
+  })
+  if (!res.ok) return null
+  return URL.createObjectURL(await res.blob())
 }
 
 /** Only used when USE_ELEVENLABS is on. Bridge proxy first (it already holds

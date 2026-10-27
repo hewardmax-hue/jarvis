@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { probeUrl } from './page.mjs'
 
 /**
- * The `display` tool — JARVIS's screen.
+ * The `display` tool — Emrys’s screen.
  *
  * Rather than filling in a fixed set of card templates, the model authors the
  * panel itself: markup, layout, emphasis, and which animation it arrives with.
@@ -63,22 +63,13 @@ PICTURES AND VIDEO — these work. Use them.
   - Never invent a URL. Use only ones that appeared verbatim in a tool result.
     A guessed address is a broken image, and a broken image is worse than none.
 
-WHERE THE CONTENT COMES FROM — read this before showing anything from the web.
-  - Fetch with exa. crawling_exa and web_fetch_exa return the page's actual
-    text and its image URLs; deep_search_exa and web_search_advanced_exa
-    return content alongside the results. That returned content is what you
-    render — rewritten into these classes, in your own words and this interface's
-    shape. You are not linking to an article, you are showing it.
-  - Do NOT put a bare source URL on screen and leave the page to fetch it for
-    itself. Half the web refuses that: news CDNs answer 403 to anything that
-    is not their own page, and the panel renders as an empty rectangle. Going
-    through exa is what makes the difference between an article appearing and a
-    blank card.
-  - So: asked about a page, crawl it, then panel the substance — the headline,
-    the two or three lines that matter, the figure, the photograph.
-  - Image URLs that came back IN a tool result are real and will render; the
-    bridge fetches them server-side. An image URL you inferred or assembled
-    yourself will not. Never guess one.
+WHERE THE CONTENT COMES FROM
+  - Read the page first (WebFetch, or the chrome tools for anything behind a login),
+    then render its substance in these classes, in your own words: the headline,
+    the lines that matter, the figure, the photograph. You are showing it, not
+    linking to it — a bare URL left for the page to fetch often renders blank.
+  - Image URLs that came back IN a tool result are real and will render; ones you
+    inferred or assembled will not. Never guess one.
 
 RULES
   - No inline colours. The accent is themed by the 'accent' argument; use the
@@ -163,15 +154,15 @@ const schema = {
     .enum(['right', 'left', 'wide'])
     .default('right')
     .describe(
-      'Where it sits. right = the default stack beside the reactor. ' +
+      'Where it sits. right = the default. ' +
         'left = the opposite side, for a second simultaneous panel. ' +
-        'wide = a broader card under the reactor, for images or dense tables.',
+        'wide = a broader card, for images or dense tables.',
     ),
   accent: z
     .enum(['default', 'amber', 'violet', 'green', 'red'])
     .default('default')
     .describe(
-      'Colour identity. default = the interface cyan. amber = caution or ' +
+      'Colour identity. default = the interface accent. amber = caution or ' +
         'pending. violet = generated or synthetic content. green = confirmed ' +
         'or healthy. red = failure or alert. Use it meaningfully, not decoratively.',
     ),
@@ -184,7 +175,7 @@ const schema = {
     ),
 }
 
-const DESCRIPTION = `Put something on the JARVIS heads-up display.
+const DESCRIPTION = `Put something on Emrys’s display.
 
 You are designing the panel, not filling in a template — compose the markup for
 the content at hand and choose the animation, position and colour that suit it.
@@ -319,10 +310,10 @@ argument. You know those things. Overrule it whenever you have reason to.`
  */
 export function displayServer(emit, emitBlade) {
   return createSdkMcpServer({
-    name: 'jarvis',
+    name: 'emrys',
     version: '1.0.0',
     instructions:
-      'The JARVIS heads-up display. Use `display` to put content on screen ' +
+      'Emrys’s display. Use `display` to put content on screen ' +
       'alongside what you say.',
     // Never defer this behind tool search — if the model has to go looking for
     // it, it won't occur to it to show anything.
@@ -340,7 +331,7 @@ export function displayServer(emit, emitBlade) {
         // the child element rather than the parent.
         const text = String(args.html ?? '').replace(/<[^>]*>/g, '').trim()
         if (!text && !/<(img|video|iframe|source)\b/i.test(args.html ?? '')) {
-          console.warn('[jarvis] display called with an empty body:', args.title)
+          console.warn('[emrys] display called with an empty body:', args.title)
           return {
             isError: true,
             content: [

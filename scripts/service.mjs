@@ -21,16 +21,19 @@ import { homedir, userInfo } from 'node:os'
 import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { HOME, migrateHome } from '../bridge/home.mjs'
 
-const LABEL = 'com.jarvis.core'
+const LABEL = 'com.emrys.core'
+/** The service's name when he was called JARVIS. Replaced on install. */
+const LEGACY_LABEL = 'com.jarvis.core'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const PLIST = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`)
-const HOME = process.env.JARVIS_HOME ?? join(homedir(), '.jarvis')
+const LEGACY_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${LEGACY_LABEL}.plist`)
 const LOGS = join(HOME, 'logs')
 const OUT_LOG = join(LOGS, 'core.log')
 const ERR_LOG = join(LOGS, 'core.err.log')
 const DOMAIN = `gui/${userInfo().uid}`
-const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+const PORT = Number(process.env.EMRYS_PORT ?? process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
 const command = process.argv[2]
 
@@ -58,10 +61,21 @@ async function install() {
     process.exit(1)
   }
 
+  buildInterface()
+
+  // The JARVIS-era service goes first, so nothing is holding the port or
+  // writing to ~/.jarvis while it moves. Then the memory folder moves to
+  // ~/.emrys — before the plist below points launchd's log files into it.
+  if (existsSync(LEGACY_PLIST) || loaded(LEGACY_LABEL)) {
+    spawnSync('launchctl', ['bootout', `${DOMAIN}/${LEGACY_LABEL}`], { stdio: 'ignore' })
+    for (let i = 0; i < 20 && loaded(LEGACY_LABEL); i++) await sleep(250)
+    if (existsSync(LEGACY_PLIST)) unlinkSync(LEGACY_PLIST)
+    console.log('Retired the old JARVIS service.')
+  }
+  if (migrateHome()) console.log(`Moved ~/.jarvis to ${HOME} (the old path still works).`)
+
   mkdirSync(LOGS, { recursive: true })
   mkdirSync(dirname(PLIST), { recursive: true })
-
-  buildInterface()
 
   // Only configuration travels into the plist. Secrets do not: the file sits
   // in ~/Library/LaunchAgents, readable by anything running as you. The
@@ -69,11 +83,11 @@ async function install() {
   const env = {
     PATH: [dirname(process.execPath), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'),
     HOME: homedir(),
-    JARVIS_SERVICE: '1',
-    JARVIS_STAY_AWAKE: process.argv.includes('--no-stay-awake') ? '0' : '1',
+    EMRYS_SERVICE: '1',
+    EMRYS_STAY_AWAKE: process.argv.includes('--no-stay-awake') ? '0' : '1',
   }
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('JARVIS_') && !(key in env) && value) env[key] = value
+    if ((key.startsWith('EMRYS_') || key.startsWith('JARVIS_')) && !(key in env) && value) env[key] = value
   }
 
   writeFileSync(PLIST, plist({
@@ -97,7 +111,7 @@ async function install() {
   // which is exactly what a reinstall, the way to pick up an update, does. So
   // wait for launchd to forget it, and give bootstrap a few tries besides.
   spawnSync('launchctl', ['bootout', `${DOMAIN}/${LABEL}`], { stdio: 'ignore' })
-  for (let i = 0; i < 20 && loaded(); i++) await sleep(250)
+  for (let i = 0; i < 20 && loaded(LABEL); i++) await sleep(250)
   for (let attempt = 1; ; attempt++) {
     try {
       execFileSync('launchctl', ['bootstrap', DOMAIN, PLIST], { stdio: 'pipe' })
@@ -133,7 +147,7 @@ async function uninstall() {
   if (removed) unlinkSync(PLIST)
   console.log(
     out.status === 0 || removed
-      ? 'The always-on core is stopped and will not start at login. ~/.jarvis is untouched.'
+      ? `The always-on core is stopped and will not start at login. ${HOME} is untouched.`
       : 'The always-on core was not installed.',
   )
 }
@@ -158,6 +172,14 @@ async function status() {
   console.log(`App:     ${s.app ?? 'not built — `npm run service:install` builds it'}`)
   console.log(`Models:  voice ${s.models.voice.model} · deep ${s.models.deep.model} · fast ${s.models.fast.model}`)
   console.log(`Memory:  ${s.home}`)
+  if (s.brain) {
+    console.log(
+      `Brain:   ${s.brain.items} items, ${s.brain.digested} summarised` +
+        (s.brain.pending ? `, ${s.brain.pending} to go` : '') +
+        ` · ${s.brain.sources.map((x) => `${x.name} ${x.items}`).join(', ')}`,
+    )
+  }
+  if (s.voice) console.log(`Voice:   ${s.voice.ready ? `natural (${s.voice.default})` : `browser fallback${s.voice.failed ? ` — ${s.voice.failed}` : ' — loading'}`}`)
   for (const job of s.jobs) {
     const when = (iso) => (iso ? new Date(iso).toLocaleString() : 'never')
     console.log(
@@ -216,9 +238,9 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-/** Whether launchd still knows the service. */
-function loaded() {
-  return spawnSync('launchctl', ['print', `${DOMAIN}/${LABEL}`], { stdio: 'ignore' }).status === 0
+/** Whether launchd still knows a service. */
+function loaded(label = LABEL) {
+  return spawnSync('launchctl', ['print', `${DOMAIN}/${label}`], { stdio: 'ignore' }).status === 0
 }
 
 async function probe(path) {

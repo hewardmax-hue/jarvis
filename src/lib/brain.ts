@@ -99,6 +99,16 @@ export function answerApproval(id: string, approved: boolean): void {
   if (usingBridge) bridge.answerApproval(id, approved)
 }
 
+export type { BrainEvent, RecallHit } from './bridge'
+
+export function watchBrain(fn: (e: bridge.BrainEvent) => void): void {
+  if (usingBridge) bridge.watchBrain(fn)
+}
+
+export function setTier(tier: string): void {
+  if (usingBridge) bridge.setTier(tier)
+}
+
 export function watchNotices(fn: (items: bridge.Notice[]) => void): void {
   if (usingBridge) bridge.watchNotices(fn)
 }
@@ -134,7 +144,7 @@ export function isConnected(): boolean {
  * Connection state, for the UI.
  *
  * Worth surfacing because in bridge mode the socket *is* the conversation: all
- * of JARVIS's memory of the exchange lives in the agent session behind it, so a
+ * of Emrys's memory of the exchange lives in the agent session behind it, so a
  * drop wipes the conversation while the transcript on screen still shows it.
  * Never fires on the direct path, which has no connection to lose.
  */

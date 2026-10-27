@@ -19,7 +19,7 @@ import { getMic } from './audio'
  * later from a real transcriber that cannot silently fail the way the browser
  * one did.
  *
- * Hearing himself is the one hard part. The microphone picks up JARVIS's own
+ * Hearing himself is the one hard part. The microphone picks up Emrys's own
  * voice through the speakers, and raw energy cannot tell that from the user.
  * Two things handle it: getUserMedia is asked for echo cancellation, which
  * removes most of the playback, and while he is speaking the trigger threshold
@@ -40,7 +40,7 @@ export type VadHandlers = {
 
 export type Vad = {
   stop: () => void
-  /** Raise the trigger bar while JARVIS speaks, so his own playback leaking
+  /** Raise the trigger bar while Emrys speaks, so his own playback leaking
    *  past echo cancellation does not register as the user talking. */
   setGuard: (on: boolean) => void
   /** Manual mode only: start recording now, whatever the energy says. */

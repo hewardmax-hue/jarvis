@@ -1,5 +1,5 @@
 import { BRIDGE_HTTP_URL } from '../config'
-import { getMic } from './audio'
+import { getMic, stopAnalyser } from './audio'
 import { speakingNow, speakingSince } from './tts'
 import { startVad, type Vad } from './vad'
 import { caps } from './capabilities'
@@ -9,7 +9,7 @@ import { caps } from './capabilities'
  *
  * One recogniser, running for the life of the page. It is never torn down for
  * a turn, and that single fact is most of what separates this from a kiosk:
- * the microphone is still open while JARVIS is talking, so you can cut him off
+ * the microphone is still open while Emrys is talking, so you can cut him off
  * the way you would cut off a person.
  *
  * The obvious design — one recogniser hunting for the wake word, a second one
@@ -18,7 +18,7 @@ import { caps } from './capabilities'
  * nothing is listening during an answer, so barge-in is impossible, and every
  * restart leaves a quarter-second of deafness that eats whole wake words.
  *
- * Keeping the mic open costs one thing: JARVIS hears himself through the
+ * Keeping the mic open costs one thing: Emrys hears himself through the
  * speakers. That is handled here in text rather than in acoustics — see
  * `isEcho` — because the browser gives SpeechRecognition its own capture and
  * won't let us put a canceller in front of it.
@@ -38,7 +38,7 @@ export type VoiceHandlers = {
   /** Read fresh on every result, so the app never has to re-subscribe. */
   mode: () => VoiceMode
   /** Fired on his name, from a partial — waiting for endpointing feels slow.
-   *  `trailing` is whatever followed it, so "Jarvis, what's the weather" is
+   *  `trailing` is whatever followed it, so "Emrys, what's the weather" is
    *  one breath rather than two turns. */
   onWake: (trailing: string) => void
   /** The user has genuinely started talking. This is the barge-in trigger. */
@@ -92,17 +92,17 @@ const WAKE_DEBOUNCE = 1500
  * His name, and the only wake phrase.
  *
  * The optional prefix is genuinely optional: addressing him by name alone is
- * correct, and during an answer "Jarvis" on its own is the natural way to cut
- * in. The negative lookahead keeps possessives ("Jarvis's job") from waking him.
+ * correct, and during an answer "Emrys" on its own is the natural way to cut
+ * in. The negative lookahead keeps possessives ("Emrys's job") from waking him.
  *
- * The alternates are not padding. "Jarvis" is not in a general dictation
+ * The alternates are not padding. "Emrys" is not in a general dictation
  * model's high-frequency vocabulary, and Chrome routinely returns Travis,
  * Jervis, Jarvys or Java's for a perfectly clear utterance — every one of which
  * used to be silently discarded, so the wake word "just didn't work" with no
  * indication why. Better a rare false wake than a name that does not answer.
  */
 const WAKE =
-  /\b(?:hey|hi|ok|okay|yo)?\s*(?:jarvis|jarvys|jervis|jarvis's|travis|jarviss|java's|jarv)\b(?!'s)/i
+  /\b(?:hey|hi|ok|okay|yo)?\s*(?:emrys|emris|emeris|emerys|emmerys|emory's|emorys|emrees|amrys|amris|imris|embrys)\b(?!'s)/i
 
 /** Everything after the wake phrase, which is usually the actual command. */
 function afterWake(text: string): string {
@@ -159,7 +159,7 @@ const TRAILS = /[,;:–—-]$/
  * reaching the detector, but the attack of the very first syllable is the
  * loudest, least-cancelled thing in the whole answer — it arrives before the
  * canceller has adapted to it. Without this, a long answer could interrupt
- * itself on its own first word, which reads as JARVIS refusing to speak.
+ * itself on its own first word, which reads as Emrys refusing to speak.
  *
  * Kept short deliberately. This is the one window where a genuine interruption
  * is also least likely: the user has not yet heard enough to want to stop him.
@@ -291,7 +291,7 @@ const norm = (s: string) =>
  * would be the single most infuriating failure this file could have.
  */
 const OVERRIDE =
-  /\b(stop|wait|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
+  /\b(stop|wait|emrys|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
 
 /**
  * Words too common to be evidence of anything.
@@ -412,7 +412,21 @@ if (typeof window !== 'undefined') {
  */
 export async function startVoice(handlers: VoiceHandlers): Promise<Voice> {
   try {
-    await getMic()
+    // Under push-to-talk with the browser's recogniser, nothing may hold the
+    // microphone open between presses — that keeps the system's mic light on
+    // all day. So permission is checked, not taken: asked for once if it has
+    // never been granted, and the stream released straight away.
+    const lean = Boolean(handlers.pushToTalk) && !caps().stt
+    let granted = false
+    try {
+      granted = (await navigator.permissions.query({ name: 'microphone' as PermissionName })).state === 'granted'
+    } catch {
+      granted = false
+    }
+    if (!(lean && granted)) {
+      await getMic()
+      if (lean) stopAnalyser()
+    }
   } catch (err) {
     diag.lastError = 'mic'
     handlers.onError(
