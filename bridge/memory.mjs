@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { forget, localTime, readSop, remember, takeBriefings } from './home.mjs'
 
 /**
- * Emrys’s memory and second brain — the `emrys_brain` tools.
+ * Jett’s memory and second brain — the `jett_brain` tools.
  *
  * What he knows about you already rides in every prompt (see contextBlock in
  * home.mjs), and the most relevant notes are looked up and handed to him
@@ -11,7 +11,7 @@ import { forget, localTime, readSop, remember, takeBriefings } from './home.mjs'
  * search further, open an item in full, write something down, take something
  * back, read a briefing a job left, load a procedure, start a job now.
  *
- * Everything stays inside ~/.emrys and the folders the user chose, which is why
+ * Everything stays inside ~/.jett and the folders the user chose, which is why
  * the gate lets it run unasked. Searching and opening also move the map on
  * screen, so the user watches him go to the note he is answering from.
  */
@@ -31,7 +31,7 @@ const day = (iso) => (iso ? iso.slice(0, 10) : '')
  */
 export function memoryServer({ scheduler, brain, onBriefingsRead, focus }) {
   return createSdkMcpServer({
-    name: 'emrys_brain',
+    name: 'jett_brain',
     version: '2.0.0',
     instructions:
       'Your long-term memory and the user\'s second brain: their notes, documents, ' +
@@ -151,7 +151,7 @@ a vaguer request is refused so it cannot wipe more than was meant.`,
 
       tool(
         'write_note',
-        `Save a note to the user's second brain — their notes vault (~/.emrys/notes), plain
+        `Save a note to the user's second brain — their notes vault (~/.jett/notes), plain
 Markdown they can open in any editor. Use it when they ask you to write something
 down that is longer than a fact: meeting notes, a plan, an idea, a summary of
 research, a list. Writing to an existing title adds to it, dated. Link related
@@ -159,7 +159,7 @@ notes by writing [[Their Title]] in the body; those links become lines on the ma
         {
           title: z.string().describe('A short, findable title.'),
           body: z.string().describe('The note, in Markdown.'),
-          folder: z.string().optional().catch(undefined).describe('Optional folder, e.g. "Projects/Emrys".'),
+          folder: z.string().optional().catch(undefined).describe('Optional folder, e.g. "Projects/Jett".'),
         },
         async ({ title, body, folder }) => {
           const { path, id } = await brain.writeNote({ title, body, folder })
@@ -183,7 +183,7 @@ picked up yet.`,
               `. Last scanned ${s.lastScan ?? 'never'}.\n` +
               s.sources.map((x) => `- ${x.name}: ${x.items} items from ${x.path}`).join('\n') +
               (s.lastError ? `\nLast problem: ${s.lastError}` : '') +
-              `\nSources are configured in ~/.emrys/brain/sources.json.`,
+              `\nSources are configured in ~/.jett/brain/sources.json.`,
           )
         },
       ),

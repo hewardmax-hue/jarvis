@@ -1,5 +1,5 @@
 /**
- * The Mac itself — the `emrys_mac` tools.
+ * The Mac itself — the `jett_mac` tools.
  *
  * The browser is one app; this is the rest of the machine. Opening an app, a
  * file, a folder or a link, a notification, the clipboard, the volume, what is
@@ -35,7 +35,7 @@ const quote = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"
 
 export function macServer() {
   return createSdkMcpServer({
-    name: 'emrys_mac',
+    name: 'jett_mac',
     version: '1.0.0',
     instructions:
       "The user's Mac: open apps, files, folders and links; notifications; clipboard; " +

@@ -5,7 +5,7 @@ import { fetchText, peek, proxyError } from './net.mjs'
  * Showing a web page on the display.
  *
  * The problem this solves is specific and, until now, unsolvable from the
- * browser side. Emrys finds an article and wants to put it on screen. Three
+ * browser side. Jett finds an article and wants to put it on screen. Three
  * separate mechanisms stop him:
  *
  *   1. `X-Frame-Options: DENY` / `frame-ancestors` — most publishers refuse to

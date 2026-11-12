@@ -105,12 +105,71 @@ export function watchBrain(fn: (e: bridge.BrainEvent) => void): void {
   if (usingBridge) bridge.watchBrain(fn)
 }
 
+export type { HelperEvent } from './bridge'
+
+export function watchHelper(fn: (e: bridge.HelperEvent) => void): void {
+  if (usingBridge) bridge.watchHelper(fn)
+}
+
+export function sendPhase(phase: string): void {
+  if (usingBridge) bridge.sendPhase(phase)
+}
+
 export function setTier(tier: string): void {
   if (usingBridge) bridge.setTier(tier)
 }
 
+/**
+ * The two things done without a model: switching brains, and writing a thought
+ * down the moment it is said. Bridge-only — both live in the core — and both
+ * always answer, so the caller can say what happened either way.
+ */
+export type { BrainSwitch, Captured, Shelf } from './bridge'
+
+export function switchBrain(want: 'local' | 'cloud' | 'status', said: string): Promise<bridge.BrainSwitch> {
+  if (usingBridge) return bridge.switchBrain(want, said)
+  return Promise.resolve({ ok: false, say: 'Switching brains needs the core running.', mode: 'cloud', model: null })
+}
+
+export function capture(kind: 'fact' | 'note', text: string, said: string): Promise<bridge.Captured> {
+  if (usingBridge) return bridge.capture(kind, text, said)
+  return Promise.resolve({ ok: false, kind, error: 'the core is not running' })
+}
+
 export function watchNotices(fn: (items: bridge.Notice[]) => void): void {
   if (usingBridge) bridge.watchNotices(fn)
+}
+
+/** The workshop. Bridge-only: the builder lives in the core. */
+export type { BenchAnswer, BenchFrame, Sorted } from './bridge'
+
+export function watchBench(fn: (frame: bridge.BenchFrame) => void): void {
+  if (usingBridge) bridge.watchBench(fn)
+}
+
+export function sendBench(frame: Record<string, unknown>): void {
+  if (usingBridge) bridge.sendBench(frame)
+}
+
+export function tellBench(said: string): Promise<bridge.Sorted> {
+  if (usingBridge) return bridge.tellBench(said)
+  return Promise.resolve({ kind: 'other', line: '', what: '' })
+}
+
+export function askBench(op: 'state' | 'last' | 'close'): Promise<bridge.BenchAnswer> {
+  if (usingBridge) return bridge.askBench(op)
+  return Promise.resolve({ ok: false, lost: true })
+}
+
+/** What he and his agents are doing, step by step. Bridge-only: the direct path has no agents. */
+export type { Step } from './bridge'
+
+export function watchActivity(fn: (steps: bridge.Step[], whole: boolean) => void): void {
+  if (usingBridge) bridge.watchActivity(fn)
+}
+
+export function stopJob(name: string): void {
+  if (usingBridge) bridge.stopJob(name)
 }
 
 /**
@@ -144,7 +203,7 @@ export function isConnected(): boolean {
  * Connection state, for the UI.
  *
  * Worth surfacing because in bridge mode the socket *is* the conversation: all
- * of Emrys's memory of the exchange lives in the agent session behind it, so a
+ * of Jett's memory of the exchange lives in the agent session behind it, so a
  * drop wipes the conversation while the transcript on screen still shows it.
  * Never fires on the direct path, which has no connection to lose.
  */

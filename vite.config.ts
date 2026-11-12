@@ -7,8 +7,13 @@ export default defineConfig({
   server: {
     // Honour PORT so a second instance can run alongside the first. The bridge
     // only accepts sockets from localhost:5173-5199, so stay inside that range
-    // or set JARVIS_ALLOWED_ORIGINS to match.
+    // or set JETT_ALLOWED_ORIGINS to match.
     port: Number(process.env.PORT) || 5173,
+    // The workshop's sealed stage is served by the core. The built app gets it
+    // from its own port; this hands the dev server the same address.
+    proxy: {
+      '/workshop': `http://localhost:${process.env.JETT_PORT ?? 8787}`,
+    },
   },
   optimizeDeps: {
     // kokoro-js pulls in `phonemizer`, which carries espeak-ng as inline WASM.

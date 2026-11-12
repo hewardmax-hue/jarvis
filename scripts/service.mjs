@@ -1,7 +1,11 @@
 /**
  * The always-on core: the bridge as a macOS launchd agent.
  *
- *   npm run service:install     build the interface, start it now and at every login
+ *   npm run service:install     build the interface and the Mac app, start the core
+ *                               and the app now and at every login (--no-app to skip
+ *                               the app)
+ *   npm run service:restart     put the core on the code that is on disk (it waits for
+ *                               a running job; -- --force does not)
  *   npm run service:status      is it running, and what is scheduled
  *   npm run service:logs        the last of its output (-- --follow to tail)
  *   npm run service:uninstall   stop it and remove it
@@ -16,24 +20,26 @@
  * system-wide — and uninstall removes every trace of it.
  */
 
+import '../bridge/env.mjs'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { homedir, userInfo } from 'node:os'
 import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HOME, migrateHome } from '../bridge/home.mjs'
+import { APP, appRunning, buildApp, openApp, removeApp, retireLegacy, startApp } from './app.mjs'
 
-const LABEL = 'com.emrys.core'
-/** The service's name when he was called JARVIS. Replaced on install. */
-const LEGACY_LABEL = 'com.jarvis.core'
+const LABEL = 'com.jett.core'
+/** The service's names when he was called Emrys, and JARVIS before that. Replaced on install. */
+const LEGACY_LABELS = ['com.emrys.core', 'com.jarvis.core']
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const PLIST = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`)
-const LEGACY_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${LEGACY_LABEL}.plist`)
+const AGENTS = join(homedir(), 'Library', 'LaunchAgents')
+const PLIST = join(AGENTS, `${LABEL}.plist`)
 const LOGS = join(HOME, 'logs')
 const OUT_LOG = join(LOGS, 'core.log')
 const ERR_LOG = join(LOGS, 'core.err.log')
 const DOMAIN = `gui/${userInfo().uid}`
-const PORT = Number(process.env.EMRYS_PORT ?? process.env.JARVIS_BRIDGE_PORT ?? 8787)
+const PORT = Number(process.env.JETT_PORT ?? process.env.JETT_BRIDGE_PORT ?? 8787)
 
 const command = process.argv[2]
 
@@ -42,9 +48,9 @@ if (process.platform !== 'darwin') {
   process.exit(1)
 }
 
-const actions = { install, uninstall, status, logs }
+const actions = { install, uninstall, restart, status, logs }
 if (!actions[command]) {
-  console.error('Usage: node scripts/service.mjs install | uninstall | status | logs [--follow]')
+  console.error('Usage: node scripts/service.mjs install | uninstall | restart [--force] | status | logs [--follow]')
   process.exit(1)
 }
 await actions[command]()
@@ -63,16 +69,19 @@ async function install() {
 
   buildInterface()
 
-  // The JARVIS-era service goes first, so nothing is holding the port or
-  // writing to ~/.jarvis while it moves. Then the memory folder moves to
-  // ~/.emrys — before the plist below points launchd's log files into it.
-  if (existsSync(LEGACY_PLIST) || loaded(LEGACY_LABEL)) {
-    spawnSync('launchctl', ['bootout', `${DOMAIN}/${LEGACY_LABEL}`], { stdio: 'ignore' })
-    for (let i = 0; i < 20 && loaded(LEGACY_LABEL); i++) await sleep(250)
-    if (existsSync(LEGACY_PLIST)) unlinkSync(LEGACY_PLIST)
-    console.log('Retired the old JARVIS service.')
+  // A service under an earlier name goes first, so nothing is holding the port
+  // or writing to the old folder while it moves. Then the memory folder moves
+  // to ~/.jett — before the plist below points launchd's log files into it.
+  for (const old of LEGACY_LABELS) {
+    const oldPlist = join(AGENTS, `${old}.plist`)
+    if (!existsSync(oldPlist) && !loaded(old)) continue
+    spawnSync('launchctl', ['bootout', `${DOMAIN}/${old}`], { stdio: 'ignore' })
+    for (let i = 0; i < 20 && loaded(old); i++) await sleep(250)
+    if (existsSync(oldPlist)) unlinkSync(oldPlist)
+    console.log(`Retired the old service (${old}).`)
   }
-  if (migrateHome()) console.log(`Moved ~/.jarvis to ${HOME} (the old path still works).`)
+  const moved = migrateHome()
+  if (moved) console.log(`Moved ${moved} to ${HOME} (the old path still works).`)
 
   mkdirSync(LOGS, { recursive: true })
   mkdirSync(dirname(PLIST), { recursive: true })
@@ -83,11 +92,11 @@ async function install() {
   const env = {
     PATH: [dirname(process.execPath), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'),
     HOME: homedir(),
-    EMRYS_SERVICE: '1',
-    EMRYS_STAY_AWAKE: process.argv.includes('--no-stay-awake') ? '0' : '1',
+    JETT_SERVICE: '1',
+    JETT_STAY_AWAKE: process.argv.includes('--no-stay-awake') ? '0' : '1',
   }
   for (const [key, value] of Object.entries(process.env)) {
-    if ((key.startsWith('EMRYS_') || key.startsWith('JARVIS_')) && !(key in env) && value) env[key] = value
+    if (/^(JETT|EMRYS|JARVIS)_/.test(key) && !(key in env) && value) env[key] = value
   }
 
   writeFileSync(PLIST, plist({
@@ -130,7 +139,9 @@ async function install() {
   for (let i = 0; i < 30; i++) {
     const h = await probe('/health')
     if (h?.service) {
-      console.log(' — running.\n')
+      console.log(' — running.')
+      await installApp()
+      console.log('')
       return status()
     }
     process.stdout.write('.')
@@ -141,7 +152,35 @@ async function install() {
   process.exit(1)
 }
 
+/**
+ * Jett, the Mac app: his window, his dot in the menu bar, and ⌥ to talk from
+ * any app. Optional — the core also serves the same interface to a browser at
+ * http://localhost:4180 — so a failure here is reported and the install
+ * carries on.
+ */
+async function installApp() {
+  if (process.argv.includes('--no-app') || process.argv.includes('--no-helper')) return
+  try {
+    process.stdout.write('Mac app… ')
+    const retired = retireLegacy()
+    const rebuilt = buildApp()
+    await startApp(plist)
+    console.log(rebuilt ? `built and running (${APP}).` : 'running.')
+    if (retired.length) console.log(`  Replaced ${retired.join(' and ')} — the app carries the ⌥ key itself now.`)
+    if (rebuilt) {
+      console.log(
+        '  First run: allow the microphone and speech recognition when macOS asks. Nothing\n' +
+          '  else is needed — hold ⌥ Option on its own, in any app, and talk.',
+      )
+    }
+    if (!process.argv.includes('--quiet')) openApp()
+  } catch (err) {
+    console.log(`not installed — ${err.message}`)
+  }
+}
+
 async function uninstall() {
+  removeApp()
   const out = spawnSync('launchctl', ['bootout', `${DOMAIN}/${LABEL}`], { encoding: 'utf8' })
   const removed = existsSync(PLIST)
   if (removed) unlinkSync(PLIST)
@@ -150,6 +189,37 @@ async function uninstall() {
       ? `The always-on core is stopped and will not start at login. ${HOME} is untouched.`
       : 'The always-on core was not installed.',
   )
+}
+
+/**
+ * Stop the core and let launchd start it again, on the code now on disk.
+ *
+ * Not while a job is running, unless forced: a briefing cut off half-way is
+ * worse than a restart a minute later.
+ */
+async function restart() {
+  const label = [LABEL, ...LEGACY_LABELS].find((l) => loaded(l))
+  if (!label) {
+    console.log('The always-on core is not installed, so there is nothing to restart. `npm run service:install` starts it.')
+    process.exit(1)
+  }
+  const before = await probe('/status')
+  const busy = (before?.jobs ?? []).filter((job) => job.running).map((job) => job.name)
+  if (busy.length && !process.argv.includes('--force')) {
+    console.log(`A job is running (${busy.join(', ')}). Try again in a minute, or add --force to cut it short.`)
+    process.exit(1)
+  }
+  spawnSync('launchctl', ['kickstart', '-k', `${DOMAIN}/${label}`], { stdio: 'ignore' })
+  for (let i = 0; i < 120; i++) {
+    await sleep(250)
+    const now = await probe('/status')
+    if (now?.ok && now.started !== before?.started) {
+      console.log('The core has restarted.')
+      return
+    }
+  }
+  console.log('The core did not come back within 30 seconds. `npm run service:logs` shows why.')
+  process.exit(1)
 }
 
 async function status() {
@@ -172,6 +242,14 @@ async function status() {
   console.log(`App:     ${s.app ?? 'not built — `npm run service:install` builds it'}`)
   console.log(`Models:  voice ${s.models.voice.model} · deep ${s.models.deep.model} · fast ${s.models.fast.model}`)
   console.log(`Memory:  ${s.home}`)
+  const h = s.helper
+  console.log(
+    `Mac app: ${
+      !h?.connected
+        ? appRunning() ? 'running, not connected yet' : 'not running — open Jett from Launchpad, or `npm run service:install`'
+        : h.ready ? 'ready — ⌥ works from any app' : `running, waiting on ${h.missing.join(', ')}`
+    }`,
+  )
   if (s.brain) {
     console.log(
       `Brain:   ${s.brain.items} items, ${s.brain.digested} summarised` +

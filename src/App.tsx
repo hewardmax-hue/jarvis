@@ -8,6 +8,7 @@ import { Blades } from './ui/Blades'
 import { Diagnostics } from './ui/Diagnostics'
 import { Pointer } from './ui/Pointer'
 import { GestureGuide } from './ui/GestureGuide'
+import { Workshop } from './ui/Workshop'
 import { useStore, type Tier } from './store'
 import { startVoice, type Voice, type VoiceMode } from './lib/voice'
 import { createSpeaker, currentVoiceName } from './lib/tts'
@@ -15,6 +16,7 @@ import * as sfx from './lib/sfx'
 import * as hands from './lib/hands'
 import * as camera from './lib/camera'
 import * as screen from './lib/screen'
+import * as workshop from './lib/workshop'
 import { PUSH_TO_TALK } from './config'
 import { forTool, attention, stall } from './lib/fillers'
 import {
@@ -30,11 +32,21 @@ import {
   watchApprovals,
   watchNotices,
   watchBrain,
+  watchHelper,
+  watchActivity,
+  switchBrain,
+  capture,
+  sendBench,
+  tellBench,
+  askBench,
+  isConnected,
+  sendPhase,
   connectedLabels,
   usingBridge,
   type Msg,
   type RecallHit,
 } from './lib/brain'
+import { route, type Route } from './lib/routes'
 import { fetchGraph } from './lib/memory'
 import { answerFromSpeech, decide } from './lib/approval'
 import { startAnalyser, stopAnalyser, micLevel } from './lib/audio'
@@ -42,7 +54,7 @@ import { caps, probeCapabilities } from './lib/capabilities'
 import { env } from './config'
 
 /**
- * Emrys.
+ * Jett.
  *
  * The page opens straight into the live interface — no ignition screen, no
  * start-up sequence, no music. The core is always running, so there is nothing
@@ -64,8 +76,30 @@ const newId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `id${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
 
-/** The ways speech recognition hears "Emrys". */
-const NAME = "(?:emrys|emris|emeris|emerys|emmerys|emory's|emorys|emrees|amrys|amris|imris|embrys)"
+/** Receipts for a thing remembered. Short, and only ever said once it is on disk. */
+const KEPT = ['Remembered.', 'Committed to memory.', "I'll keep hold of that.", 'Noted, and kept.']
+
+/** How long a question about a build may wait for its answer before the turn is let go. */
+const BENCH_ANSWER_MS = 25000
+
+/** A build with nothing on the bench yet says so about this often, in these words, in this order. */
+const BENCH_QUIET_MS = 10000
+const STILL_BUILDING = ['Working out the parts.', 'Still drawing it up.', "There's a lot to this one. Still going."]
+/**
+ * A detailed build can be thought about for minutes before its first part. Past
+ * the first half minute the lines come further apart and go round, so the wait
+ * is never dead air and never a nag.
+ */
+const BENCH_LONG_MS = 30000
+const STILL_DESIGNING = [
+  'Still designing it. The detailed ones take a few minutes.',
+  'Still with it.',
+  'Still at the drawing board.',
+  'Not forgotten. Still working it out.',
+]
+
+/** The ways speech recognition hears "Jett". */
+const NAME = '(?:jett|jet|jette|jed|chet)'
 const BARE_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}[\\s,.!?]*$`, 'i')
 const LEADING_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}\\b[\\s,.:!?-]*`, 'i')
 
@@ -80,6 +114,12 @@ export default function App() {
   /** Notes recalled for the turn in flight, attached to his answer when it starts. */
   const recalled = useRef<RecallHit[]>([])
   const announced = useRef(new Set<string>())
+  /** Lines the workshop wants said that arrived while he was busy, oldest first. */
+  const benchLines = useRef<string[]>([])
+  /** The turn that is waiting on the workshop for its answer, if one is. */
+  const benchTurn = useRef(0)
+  /** While a build has nothing to show yet: which build, when he last spoke of it, and how often. */
+  const benchWait = useRef({ id: '', at: 0, said: 0, over: false })
   const [draft, setDraft] = useState('')
 
   // -- helpers --------------------------------------------------------------
@@ -125,7 +165,8 @@ export default function App() {
 
   // -- one turn -------------------------------------------------------------
 
-  const respond = async (said: string): Promise<void> => {
+  /** `heard` when what was said is already in the transcript, having been offered to the workshop first. */
+  const respond = async (said: string, { heard = false } = {}): Promise<void> => {
     const mine = ++turn.current
     const stale = () => mine !== turn.current
 
@@ -134,7 +175,7 @@ export default function App() {
     s.clearBlades()
     s.setCaption('')
     s.setError(null)
-    s.pushTurn({ id: newId(), role: 'user', text: said, at: Date.now() })
+    if (!heard) s.pushTurn({ id: newId(), role: 'user', text: said, at: Date.now() })
     s.setPhase('thinking')
     recalled.current = []
 
@@ -160,7 +201,7 @@ export default function App() {
       begun = true
       store.getState().pushTurn({
         id: turnId,
-        role: 'emrys',
+        role: 'jett',
         text: '',
         at: Date.now(),
         sources: recalled.current.length ? recalled.current : undefined,
@@ -225,6 +266,240 @@ export default function App() {
     }
   }
 
+  /**
+   * A voice route: something handled here and now, with no model in the way.
+   *
+   * It is still a turn — what was said goes in the transcript and what he did
+   * about it is spoken — but the line he speaks is a receipt for something that
+   * has already happened, or a plain statement that it did not.
+   */
+  const quick = async (said: string, r: Route): Promise<void> => {
+    const phase = store.getState().phase
+    const busy = phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
+    if (r.kind === 'stop') {
+      // Whatever he is doing, here and in the core. Nothing is said back:
+      // the answer to "stop" is silence.
+      cutOff()
+      standBy()
+      return
+    }
+    if (busy) cutOff()
+    else silence()
+    const mine = ++turn.current
+    const stale = () => mine !== turn.current
+
+    clearIdle()
+    const s = store.getState()
+    s.setCaption('')
+    s.setError(null)
+    s.pushTurn({ id: newId(), role: 'user', text: said, at: Date.now() })
+    s.setPhase('thinking')
+    recalled.current = []
+
+    let line = ''
+    if (r.kind === 'capture') {
+      const got = await capture(r.as, r.text, said)
+      if (got.ok) {
+        line = got.kind === 'note' ? `Noted. Filed as “${got.title}”.` : KEPT[Math.floor(Math.random() * KEPT.length)]
+      } else {
+        sfx.play('error')
+        line = `I couldn't save that: ${got.error}. Nothing was written, so say it again in a moment.`
+      }
+    } else if (r.kind === 'brain') {
+      const got = await switchBrain(r.want, said)
+      line = got.say
+      store.getState().flashBadge()
+    } else if (r.kind === 'mute') {
+      // Said before the switch when going quiet, after it when coming back, so
+      // that the line announcing the voice is the last or first thing heard.
+      store.getState().setMuted(r.on)
+      line = r.on ? 'Muted. Text only from here.' : 'Voice back on.'
+    } else {
+      line = await atBench(r, said)
+    }
+    if (stale()) return
+    await say(line, stale)
+  }
+
+  /**
+   * Say a line that has already been decided. It goes in the transcript unless
+   * it is `aside` — already there, or not worth keeping. No line at all is
+   * silence: the turn just ends.
+   */
+  const say = async (line: string, stale: () => boolean, aside = false): Promise<void> => {
+    if (line) {
+      if (!aside) store.getState().pushTurn({ id: newId(), role: 'jett', text: line, at: Date.now() })
+      store.getState().setPhase('speaking')
+      const spk = createSpeaker()
+      speaker.current = spk
+      spk.say(line)
+      await spk.end()
+      if (stale()) return
+      speaker.current = null
+    }
+    if (PUSH_TO_TALK) standBy()
+    else listen(FOLLOW_UP_MS)
+  }
+
+  // -- the workshop ---------------------------------------------------------
+
+  /**
+   * A workshop command. Looking at the build a different way is answered by
+   * the build itself, so most of these say nothing: the view is the reply.
+   */
+  const atBench = async (r: Extract<Route, { kind: 'build' | 'bench' | 'camera' | 'light' }>, said: string): Promise<string> => {
+    const note = (text: string) => {
+      const open = store.getState().bench
+      if (open) store.getState().patchBench(open.id, { note: text })
+    }
+    if (r.kind === 'build') {
+      if (!isConnected()) return "I can't reach my core to build that just now."
+      sendBench({ op: 'build', said, what: r.what })
+      return 'On the bench.'
+    }
+    if (r.kind === 'camera') {
+      if (!workshop.camera(r.to)) note('The stage is still starting')
+      return ''
+    }
+    if (r.kind === 'light') {
+      workshop.light(r.to)
+      return ''
+    }
+    switch (r.do) {
+      case 'apart':
+      case 'together':
+        if (!workshop.explode(r.do === 'apart')) note('The stage is still starting')
+        return ''
+      case 'close':
+        workshop.drop()
+        void askBench('close')
+        return 'Cleared.'
+      case 'print': {
+        note('Exporting every piece')
+        const got = await workshop.print()
+        if (!got.ok) {
+          note('')
+          sfx.play('error')
+          return `I couldn't export that: ${got.error}.`
+        }
+        note(`Saved to Downloads, in ${got.name}`)
+        return `${got.files} ${got.files === 1 ? 'file' : 'files'} saved to your Downloads, in a folder called ${got.name}.`
+      }
+      case 'open': {
+        if (store.getState().bench || (await askBench('state')).ok) return ''
+        const last = await askBench('last')
+        return last.ok ? `Back on the bench: ${last.title}.` : 'The bench is empty. Tell me what to build.'
+      }
+      case 'last': {
+        const last = await askBench('last')
+        return last.ok ? `Back on the bench: ${last.title}.` : "There's no earlier build to bring back."
+      }
+    }
+  }
+
+  /**
+   * Something said with a build on the bench, that was not one of the instant
+   * commands. The bench hears it first: the core sorts it — a change, a
+   * question about the build, a new build, or nothing to do with the build —
+   * and has already acted on it by the time it answers. Only the last of those
+   * goes on to the brain.
+   */
+  const overBench = async (said: string): Promise<void> => {
+    const mine = ++turn.current
+    const stale = () => mine !== turn.current
+
+    clearIdle()
+    const s = store.getState()
+    s.setCaption('')
+    s.setError(null)
+    s.pushTurn({ id: newId(), role: 'user', text: said, at: Date.now() })
+    s.setPhase('thinking')
+    recalled.current = []
+
+    const sorted = await tellBench(said)
+    if (stale()) return
+    if (sorted.kind === 'other') return respond(said, { heard: true })
+    if (sorted.kind === 'talk' && !sorted.line) {
+      // The answer is still being written, and arrives as a line from the bench.
+      benchTurn.current = mine
+      idleTimer.current = setTimeout(() => {
+        if (benchTurn.current !== mine || stale()) return
+        benchTurn.current = 0
+        awaitMore()
+      }, BENCH_ANSWER_MS)
+      return
+    }
+    await say(sorted.line, stale)
+  }
+
+  /** The next line the bench has waiting, if he is free to say it. */
+  const benchNext = () => {
+    if (store.getState().phase !== 'dormant') return
+    const line = benchLines.current.shift()
+    if (!line) return
+    const mine = ++turn.current
+    void say(line, () => mine !== turn.current, true)
+  }
+
+  /**
+   * The bench has something to say: what it has built, what a change did, the
+   * answer to a question. It is written down at once and spoken when he is
+   * free — never over himself, and never over the person talking to him.
+   */
+  const benchSay = (line: string, talk: boolean) => {
+    if (!line) return
+    store.getState().pushTurn({ id: newId(), role: 'jett', text: line, at: Date.now() })
+    if (talk && benchTurn.current && benchTurn.current === turn.current) {
+      // The answer this turn has been waiting for.
+      const mine = benchTurn.current
+      benchTurn.current = 0
+      clearIdle()
+      void say(line, () => mine !== turn.current, true)
+      return
+    }
+    benchLines.current = [...benchLines.current.slice(-2), line]
+    benchNext()
+  }
+
+  /**
+   * Once a second while a build is open. A build that has nothing to show yet
+   * gets a short line every ten seconds, then every thirty, so a slow start is
+   * not dead air; the first part to appear ends that.
+   */
+  const benchTick = () => {
+    const open = store.getState().bench
+    const wait = benchWait.current
+    if (!open) {
+      wait.id = ''
+      benchLines.current = []
+      return
+    }
+    if (wait.id !== open.id) Object.assign(wait, { id: open.id, at: Date.now(), said: 0, over: false })
+    if (open.status !== 'building' || open.parts.some((part) => part.state === 'ok')) {
+      wait.over = true
+      return
+    }
+    const early = wait.said < STILL_BUILDING.length
+    if (wait.over || Date.now() - wait.at < (early ? BENCH_QUIET_MS : BENCH_LONG_MS)) return
+    if (store.getState().phase !== 'dormant' || benchLines.current.length) return
+    wait.at = Date.now()
+    const line = early
+      ? STILL_BUILDING[wait.said]
+      : STILL_DESIGNING[(wait.said - STILL_BUILDING.length) % STILL_DESIGNING.length]
+    wait.said++
+    const mine = ++turn.current
+    void say(line, () => mine !== turn.current, true)
+  }
+
+  /** One thing said or typed: handled on the spot if it is a route, else answered by the brain. */
+  const take = (said: string) => {
+    const open = usingBridge && Boolean(store.getState().bench)
+    const r = usingBridge ? route(said, { bench: open }) : null
+    if (r) void quick(said, r)
+    else if (open) void overBench(said)
+    else void respond(said)
+  }
+
   /** Typed or clicked: a turn like any other, interrupting whatever he is saying. */
   const send = (text: string) => {
     sfx.unlock()
@@ -239,7 +514,7 @@ export default function App() {
     }
     if (s.phase === 'thinking' || s.phase === 'tooling' || s.phase === 'speaking') cutOff()
     else silence()
-    void respond(text)
+    take(text)
   }
 
   // -- voice events ---------------------------------------------------------
@@ -267,7 +542,7 @@ export default function App() {
     store.getState().setError(null)
     sfx.play('wake')
     if (trailing) {
-      void respond(trailing)
+      take(trailing)
       return
     }
     store.getState().setPhase('waking')
@@ -314,16 +589,82 @@ export default function App() {
       awaitMore()
       return
     }
-    void respond(said)
+    take(said)
   }
 
   // -- push-to-talk ---------------------------------------------------------
 
   const holding = useRef(false)
 
+  // -- the Mac app's talk key -----------------------------------------------
+
+  /**
+   * ⌥ held in any app, via the Mac app. It does its own listening, so
+   * this only has to do what the key itself would: stop him, show that he is
+   * listening, and take the words as a turn when they arrive.
+   */
+  const helperWait = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const helperTalk = (down: boolean, cancelled: boolean) => {
+    const s = store.getState()
+    if (s.phase === 'offline' || s.phase === 'boot') return
+    if (helperWait.current) clearTimeout(helperWait.current)
+    helperWait.current = null
+    if (down) {
+      s.setError(null)
+      clearIdle()
+      if (!s.approval) {
+        if (s.phase === 'thinking' || s.phase === 'tooling' || s.phase === 'speaking') cutOff()
+        else silence()
+        s.setCaption('')
+        s.setPhase('listening')
+      }
+      sfx.play('listen')
+      return
+    }
+    // A shortcut, not speech: back to rest without a turn.
+    if (cancelled) {
+      if (!s.approval && s.phase === 'listening') standBy()
+      return
+    }
+    // Let go: the words are on their way. Never wait on them for ever.
+    helperWait.current = setTimeout(() => {
+      if (store.getState().phase === 'listening' && !store.getState().approval) standBy()
+    }, 4000)
+  }
+
+  const helperHeard = (text: string, final: boolean) => {
+    if (!final) {
+      store.getState().setCaption(text)
+      return
+    }
+    if (helperWait.current) clearTimeout(helperWait.current)
+    helperWait.current = null
+    if (text.trim()) onUtterance(text)
+    else if (!store.getState().approval && store.getState().phase === 'listening') standBy()
+  }
+
+  /**
+   * Inside the Mac app the talk button is the talk key: the app does the
+   * listening, exactly as it does for ⌥, and the words come back the same way.
+   */
+  const nativeTalk = (down: boolean) => {
+    const native = (window as unknown as { webkit?: { messageHandlers?: { jett?: { postMessage: (m: unknown) => void } } } })
+      .webkit?.messageHandlers?.jett
+    if (!native || !store.getState().helper) return false
+    native.postMessage({ type: 'talk', down })
+    return true
+  }
+  const nativeHeld = useRef(false)
+
   const pressTalk = () => {
     const s = store.getState()
-    if (!voice.current || holding.current) return
+    if (holding.current || nativeHeld.current) return
+    if (nativeTalk(true)) {
+      nativeHeld.current = true
+      return
+    }
+    if (!voice.current) return
     holding.current = true
     sfx.unlock()
     s.setError(null)
@@ -342,6 +683,11 @@ export default function App() {
   }
 
   const releaseTalk = () => {
+    if (nativeHeld.current) {
+      nativeHeld.current = false
+      nativeTalk(false)
+      return
+    }
     if (!voice.current || !holding.current) return
     holding.current = false
     stopAnalyser()
@@ -455,10 +801,12 @@ export default function App() {
     watchConnection((state) => {
       if (state === 'lost') {
         decide(false)
-        store.getState().setError('Lost the connection to Emrys’s core — reconnecting.')
+        store.getState().setError('Lost the connection to Jett’s core — reconnecting.')
       } else {
         store.getState().setError(null)
         loadGraph.current()
+        // A core that restarted has an empty bench, whatever is on screen here.
+        if (state !== 'open') workshop.recheck()
       }
     })
 
@@ -476,6 +824,22 @@ export default function App() {
       const known = new Set(store.getState().notices.map((n) => n.id))
       store.getState().setNotices(items)
       if (items.some((n) => !known.has(n.id))) sfx.play('done')
+    })
+
+    watchActivity((steps, whole) => {
+      const st = store.getState()
+      if (whole) st.setSteps(steps)
+      else for (const step of steps) st.putStep(step)
+    })
+
+    watchHelper((e) => {
+      if (e.type === 'presence') {
+        // Only a helper that can actually hear ⌥ takes the key over from this
+        // window. One still waiting on permissions leaves it here.
+        store.getState().setHelper(e.ready, e.connected ? e.missing : [])
+        if (e.connected) sendPhase(store.getState().phase)
+      } else if (e.type === 'talk') helperTalk(e.down, e.cancelled)
+      else helperHeard(e.text, e.final)
     })
 
     // The second brain talking to the interface.
@@ -498,6 +862,10 @@ export default function App() {
         st.light(e.ids, e.mode)
       } else if (e.type === 'tier') {
         st.setTier(e.tier as Tier)
+      } else if (e.type === 'shelf') {
+        const changed = st.shelf.mode !== e.shelf.mode
+        st.setShelf(e.shelf)
+        if (changed) st.flashBadge()
       }
     })
 
@@ -536,12 +904,29 @@ export default function App() {
   useEffect(() => {
     void start().catch((err) => {
       started.current = false
-      console.error('[emrys] start failed:', err)
+      console.error('[jett] start failed:', err)
       store.getState().setPhase('offline')
       store.getState().setError(err instanceof Error ? err.message : 'Could not start.')
     })
 
     screen.watchScreen((on) => store.getState().setSharing(on))
+
+    // What he is doing, for the menu-bar orb. And the moment he is free is the
+    // moment to say whatever the workshop has been waiting to.
+    const unphase = useStore.subscribe((st, prev) => {
+      if (st.phase === prev.phase) return
+      sendPhase(st.phase)
+      if (st.phase === 'dormant') window.setTimeout(benchNext, 0)
+    })
+
+    const stopWorkshop = workshop.startWorkshop({ say: benchSay })
+    const benchClock = window.setInterval(benchTick, 1000)
+
+    // Speech needs the window to have been clicked or typed in once since it
+    // opened. Talking through the helper is not that, so say it plainly.
+    const onBlocked = () =>
+      store.getState().setError('Click anywhere in Jett once so he can speak out loud.')
+    window.addEventListener('jett-autoplay-blocked', onBlocked)
 
     let raf = 0
     const pump = () => {
@@ -565,6 +950,9 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       // ⌥ on its own is the talk key — even from the text box, since it types
       // nothing there on its own.
+      // With the helper running it owns ⌥ everywhere, this window included;
+      // answering here as well would start two listeners on one press.
+      if (PUSH_TO_TALK && e.key === 'Alt' && store.getState().helper) return
       if (PUSH_TO_TALK && e.key === 'Alt') {
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
           e.preventDefault()
@@ -617,7 +1005,7 @@ export default function App() {
       }
     }
     const onKeyUp = (e: KeyboardEvent) => {
-      if (PUSH_TO_TALK && e.key === 'Alt') releaseTalk()
+      if (PUSH_TO_TALK && e.key === 'Alt' && !store.getState().helper) releaseTalk()
     }
     const onLeave = () => {
       if (PUSH_TO_TALK) releaseTalk()
@@ -636,6 +1024,10 @@ export default function App() {
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onLeave)
       window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('jett-autoplay-blocked', onBlocked)
+      unphase()
+      stopWorkshop()
+      window.clearInterval(benchClock)
       document.removeEventListener('visibilitychange', onVisibility)
       clearIdle()
       voice.current?.stop()
@@ -649,6 +1041,7 @@ export default function App() {
   const gestures = useStore((s) => s.gestures)
   const blades = useStore((s) => s.blades)
   const accent = useStore((s) => s.accent)
+  const building = useStore((s) => Boolean(s.bench))
 
   // One variable carries a retint into every rule that uses the accent.
   useEffect(() => {
@@ -662,7 +1055,8 @@ export default function App() {
       <TopBar onBrief={() => send('Brief me.')} />
       <MemoryPanel onAsk={send} />
       <main className="stage">
-        <BrainMap />
+        <BrainMap paused={building} />
+        {building && <Workshop />}
         <div className={`stage-blades${blades.length ? ' has-blades' : ''}`}>
           <Blades />
         </div>
@@ -670,6 +1064,10 @@ export default function App() {
       </main>
       <Conversation
         onSend={send}
+        onStop={() => {
+          cutOff()
+          standBy()
+        }}
         onHold={(down) => (down ? pressTalk() : releaseTalk())}
         draft={draft}
         setDraft={setDraft}

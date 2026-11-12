@@ -1,11 +1,11 @@
 /**
- * The tool gate: what Emrys may do without asking, what he must ask for, and
+ * The tool gate: what Jett may do without asking, what he must ask for, and
  * what he may not do at all.
  *
  * It lives apart from server.mjs because more than the voice session needs it
  * now. The scheduler runs jobs with no one at the screen, and `npm run job`
  * runs one from a terminal; all three have to draw the same line between a
- * read and a write, or the background half of Emrys would quietly be held to
+ * read and a write, or the background half of Jett would quietly be held to
  * a different standard from the half you can hear.
  */
 
@@ -16,13 +16,13 @@ import { PATHS } from './home.mjs'
 
 /**
  * Read-only and generative tools run freely. Anything that writes to disk,
- * runs a shell, or changes the world goes to the policy in ~/.emrys/policy.json
+ * runs a shell, or changes the world goes to the policy in ~/.jett/policy.json
  * (see `verdict` at the bottom), which by default asks you first.
  *
- * EMRYS_ALLOW_WRITES=1 is the old blanket switch and still works: with it set,
+ * JETT_ALLOW_WRITES=1 is the old blanket switch and still works: with it set,
  * every write runs without asking. That is the demo mode, not the daily one.
  */
-export const ALLOW_WRITES = (process.env.EMRYS_ALLOW_WRITES ?? process.env.Emrys_ALLOW_WRITES) === '1'
+export const ALLOW_WRITES = process.env.JETT_ALLOW_WRITES === '1'
 
 /**
  * Both spellings of every renamed built-in are listed on purpose. The SDK
@@ -155,6 +155,27 @@ const VETO_EXEMPT = new Set([
   'openrouter__send-feedback',
 ])
 
+/**
+ * The tool's name without the service's own name in front of it.
+ *
+ * Connectors like to prefix every tool with the service — `slack_read_channel`
+ * on the Slack server, `gmail_search_messages` on Gmail — and the read rule is
+ * anchored, so it saw "slack" where the verb should be and withheld every read
+ * the server has. In conversation that meant a card for each search; in a
+ * scheduled job, where nobody can answer a card, it meant the job that exists
+ * to read Slack was refused every time it ran.
+ *
+ * Only a first word that is one of the server's own is dropped, so nothing can
+ * buy its way past the rule with a made-up prefix, and the veto above has
+ * already looked at the whole name: `slack_send_message` is still a send.
+ */
+function bareTool(server, tool) {
+  const cut = tool.search(/[_-]/)
+  if (cut <= 0) return tool
+  const own = new Set(server.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  return own.has(tool.slice(0, cut).toLowerCase()) ? tool.slice(cut + 1) : tool
+}
+
 /** The browser tools that act on a page rather than read it. */
 const CHROME_ACTS = new Set([
   'chrome_click', 'chrome_type', 'chrome_key', 'chrome_form_input',
@@ -163,7 +184,7 @@ const CHROME_ACTS = new Set([
 
 /**
  * True when a tool can run without anyone being asked: a read, a generation,
- * Emrys’s own interface and notebook — or anything at all under ALLOW_WRITES.
+ * Jett’s own interface and notebook — or anything at all under ALLOW_WRITES.
  * False means it changes something, and `verdict` decides what happens next.
  */
 export function decideTool(name) {
@@ -174,33 +195,33 @@ export function decideTool(name) {
   if (server) {
     // The HUD, and the interface controls beside it. Both run in this process
     // and draw on our own screen, so neither is something to withhold —
-    // without them Emrys has no display at all. They also have to be named
+    // without them Jett has no display at all. They also have to be named
     // here rather than left to the verb rules below, which read `ui_theme` as
     // a write and would hold the whole surface back behind ALLOW_WRITES.
-    if (server === 'emrys' || server === 'emrys_ui') return true
+    if (server === 'jett' || server === 'jett_ui') return true
 
     // His own notebook and the second brain: remembering a fact, writing a
     // note, searching, reading back a briefing, starting one of his own jobs.
-    // All of it lands in ~/.emrys and nowhere else, so nothing is withheld.
-    if (server === 'emrys_brain') return true
+    // All of it lands in ~/.jett and nowhere else, so nothing is withheld.
+    if (server === 'jett_brain') return true
 
     // The Mac. Opening things, notifications, the clipboard and the volume run;
     // AppleScript can drive any app on the machine, so it always asks.
-    if (server === 'emrys_mac') return mcpToolOf(name) !== 'applescript' || ALLOW_WRITES
+    if (server === 'jett_mac') return mcpToolOf(name) !== 'applescript' || ALLOW_WRITES
 
     // The browser. The acting half is named here rather than left to the verb
     // rules, because those would get the reading half wrong: `chrome_navigate`
     // begins with no read verb and would fall to the write branch, which would
     // withhold the one tool the whole server is for. The acting tools are
     // always built now, and asking first is how they are held back.
-    if (server === 'emrys_chrome') {
+    if (server === 'jett_chrome') {
       return !CHROME_ACTS.has(mcpToolOf(name)) || ALLOW_WRITES
     }
 
     // The camera. Not withheld behind ALLOW_WRITES: looking changes nothing,
     // and the real gate is the browser's own camera permission plus an
     // indicator the user can see for as long as it is live.
-    if (server === 'emrys_eyes') return true
+    if (server === 'jett_eyes') return true
 
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
@@ -208,7 +229,7 @@ export function decideTool(name) {
     }
     // The session tools this bridge is developed inside count as read-only too.
     if (READ_ONLY_MCP.has(server) || server.startsWith('ccd_session')) return true
-    return READ_VERB.test(tool) ? true : ALLOW_WRITES
+    return READ_VERB.test(bareTool(server, tool)) ? true : ALLOW_WRITES
   }
   return ALLOW_WRITES
 }
@@ -225,7 +246,7 @@ export function decideTool(name) {
  * sends it. Asking is the middle: he drafts, you see exactly what is about to
  * happen, you say yes.
  *
- * ~/.emrys/policy.json holds three lists of tool-name patterns and a default:
+ * ~/.jett/policy.json holds three lists of tool-name patterns and a default:
  *
  *   { "default": "ask", "allow": [], "ask": [], "deny": ["mcp__android__*"] }
  *
@@ -284,7 +305,7 @@ export function describeCall(name, input = {}) {
   const pick = (...keys) => keys.map((k) => input?.[k]).find((v) => typeof v === 'string' && v)
   const server = mcpServerOf(name)
   const title = server
-    ? `${server.replace(/^emrys_/, '')} · ${mcpToolOf(name).replace(/^chrome_/, '').replace(/[_-]+/g, ' ')}`
+    ? `${server.replace(/^jett_/, '')} · ${mcpToolOf(name).replace(/^chrome_/, '').replace(/[_-]+/g, ' ')}`
     : name
   const detail =
     pick('command', 'script') ??

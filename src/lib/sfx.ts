@@ -13,6 +13,8 @@
  * this file is only the fallback for when that file isn't there.
  */
 
+import { useStore } from '../store'
+
 type Cue = 'boot' | 'wake' | 'listen' | 'tool' | 'done' | 'error'
 
 let ctx: AudioContext | null = null
@@ -20,7 +22,7 @@ let master: GainNode | null = null
 const samples = new Map<Cue, AudioBuffer>()
 let ambient: { source: AudioBufferSourceNode; gain: GainNode } | null = null
 
-/** Where the master sits when Emrys isn't speaking. Quiet: these are cues, not sounds to notice. */
+/** Where the master sits when Jett isn't speaking. Quiet: these are cues, not sounds to notice. */
 let volume = 0.28
 let ducked = false
 /** How far everything this module makes drops under the voice. */
@@ -74,7 +76,7 @@ export async function unlockAudio(): Promise<void> {
        */
     }
   }
-  // Real recordings in public/audio/ were supported here; Emrys ships none, so nothing is fetched.
+  // Real recordings in public/audio/ were supported here; Jett ships none, so nothing is fetched.
 }
 
 /** Pick up any real audio files the user has dropped into public/audio/. */
@@ -211,6 +213,8 @@ const synth: Record<Cue, () => void> = {
 }
 
 export function play(cue: Cue) {
+  // Muted means silent, not just quiet: the cues go the same way as the voice.
+  if (useStore.getState().muted) return
   if (!ctx || ctx.state !== 'running') return
 
   const sample = samples.get(cue)
@@ -288,7 +292,7 @@ export function stopAmbient() {
 }
 
 /**
- * Duck everything this module makes while Emrys speaks.
+ * Duck everything this module makes while Jett speaks.
  *
  * This used to touch only the synthesised bed, and return early when there
  * wasn't one — which there never is, because the ambient layer in the shipped

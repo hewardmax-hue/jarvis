@@ -2,14 +2,15 @@
  * Run one scheduled job now, from a terminal, and print what it wrote.
  *
  *   npm run job                    the morning brief
- *   npm run job -- morning-brief   any job in ~/.emrys/schedules.json
+ *   npm run job -- morning-brief   any job in ~/.jett/schedules.json
  *
  * The same code the scheduler runs, so this is the honest way to check a
  * procedure you have just edited: what you see here is what arrives at seven.
  * The result is filed exactly as a scheduled run would be — saved under
- * ~/.emrys/briefings, logged in the journal, waiting unread for "brief me".
+ * ~/.jett/briefings, logged in the journal, waiting unread for "brief me".
  */
 
+import '../bridge/env.mjs'
 import { readFileSync } from 'node:fs'
 import { ensureHome } from '../bridge/home.mjs'
 import { readSchedules, runJob } from '../bridge/scheduler.mjs'
@@ -22,7 +23,7 @@ const job = jobs.find((j) => j.name === name)
 
 if (!job) {
   console.error(
-    `No job named "${name}" in ~/.emrys/schedules.json.` +
+    `No job named "${name}" in ~/.jett/schedules.json.` +
       (jobs.length ? ` Jobs: ${jobs.map((j) => j.name).join(', ')}.` : ''),
   )
   process.exit(1)

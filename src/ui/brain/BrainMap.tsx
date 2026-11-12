@@ -11,7 +11,7 @@ import { KINDS, type Graph, type GraphNode } from '../../lib/memory'
  *
  * Every item is a point of light, coloured by what it is; folders and the
  * people and projects that tie items together are larger; lines are the
- * connections. Emrys sits at the centre. When he looks something up the items
+ * connections. Jett sits at the centre. When he looks something up the items
  * he found light up and the camera flies to them, so the answer arrives with
  * its source already on screen.
  *
@@ -21,7 +21,7 @@ import { KINDS, type Graph, type GraphNode } from '../../lib/memory'
  * quiet. Labels are HTML and only the handful that matter get one.
  */
 
-const POS_KEY = 'emrys.layout.v1'
+const POS_KEY = 'jett.layout.v1'
 
 function sizeFor(n: GraphNode): number {
   switch (n.kind) {
@@ -199,7 +199,7 @@ function Galaxy({ graph, positions }: { graph: Graph; positions: Float32Array })
   const litTarget = useMemo(() => new Float32Array(graph.nodes.length), [graph])
   const litNow = useMemo(() => new Float32Array(graph.nodes.length), [graph])
 
-  // What should glow: whatever Emrys lit, plus the selection and the hover.
+  // What should glow: whatever Jett lit, plus the selection and the hover.
   const glowing = useMemo(() => {
     const ids = new Set<string>(lit && Date.now() - lit.at < 60_000 ? lit.ids : [])
     if (selected) ids.add(selected)
@@ -272,7 +272,7 @@ function Galaxy({ graph, positions }: { graph: Graph; positions: Float32Array })
         }
       }
       if (moved) attr.needsUpdate = true
-      // Emrys's own point breathes with his voice and with yours.
+      // Jett's own point breathes with his voice and with yours.
       if (coreIndex >= 0) {
         const size = g.getAttribute('size') as THREE.BufferAttribute
         size.setX(coreIndex, sizeFor(graph.nodes[coreIndex]) * (1 + st.level * 0.9))
@@ -417,16 +417,18 @@ function Deselect() {
   return null
 }
 
-export function BrainMap() {
+/** `paused` is for when something else has the stage: the map stays as it was, hidden, and stops drawing. */
+export function BrainMap({ paused = false }: { paused?: boolean }) {
   const graph = useStore((s) => s.graph)
   const positions = useLayout(graph)
   const phase = useStore((s) => s.phase)
   const ready = graph && positions && positions.length === graph.nodes.length * 3
 
   return (
-    <div className="map" style={{ ['--phase' as string]: phaseColor[phase] }}>
+    <div className={`map${paused ? ' is-paused' : ''}`} style={{ ['--phase' as string]: phaseColor[phase] }}>
       <Canvas
         className="map-canvas"
+        frameloop={paused ? 'never' : 'always'}
         camera={{ position: [0, 30, 260], fov: 50, near: 1, far: 5000 }}
         dpr={[1, 1.75]}
         gl={{ antialias: false, alpha: true, powerPreference: 'high-performance' }}

@@ -8,7 +8,7 @@
  * the event loop the voice rides on.
  *
  * A file whose text cannot be read is still worth a node — its name, folder and
- * date are searchable, and Emrys can open it with his own tools when asked — so
+ * date are searchable, and Jett can open it with his own tools when asked — so
  * failure returns '' rather than throwing.
  */
 
