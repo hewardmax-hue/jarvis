@@ -1,5 +1,5 @@
 /**
- * ~/.emrys — what Emrys knows about you, and what he has done.
+ * ~/.jett — what Jett knows about you, and what he has done.
  *
  * Everything that makes him yours rather than a fresh chat lives in one folder
  * of plain files you can open, read and edit yourself:
@@ -24,6 +24,7 @@
  * can see what was written.
  */
 
+import './env.mjs'
 import { homedir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,11 +41,11 @@ import {
   writeFileSync,
 } from 'node:fs'
 
-const DEFAULT_HOME = join(homedir(), '.emrys')
-/** Where this lived when he was called JARVIS. */
-const LEGACY_HOME = join(homedir(), '.jarvis')
+const DEFAULT_HOME = join(homedir(), '.jett')
+/** Where this lived under his earlier names, newest first. */
+const LEGACY_HOMES = [join(homedir(), '.emrys'), join(homedir(), '.jarvis')]
 
-export const HOME = process.env.EMRYS_HOME ?? process.env.JARVIS_HOME ?? DEFAULT_HOME
+export const HOME = process.env.JETT_HOME ?? DEFAULT_HOME
 
 export const PATHS = {
   aboutMe: join(HOME, 'about-me.md'),
@@ -60,36 +61,42 @@ export const PATHS = {
   schedules: join(HOME, 'schedules.json'),
   policy: join(HOME, 'policy.json'),
   state: join(HOME, 'state.json'),
+  settings: join(HOME, 'settings.json'),
   logs: join(HOME, 'logs'),
+  cache: join(HOME, 'cache'),
+  builds: join(HOME, 'builds'),
 }
 
 const TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), 'home-template')
 
 /**
- * Move ~/.jarvis to ~/.emrys, once.
+ * Move ~/.emrys (or, older still, ~/.jarvis) to ~/.jett, once.
  *
  * A rename, not a copy: two folders that drift apart is how memory gets lost.
  * The old path is left as a link to the new one, so anything that still says
- * ~/.jarvis — an editor tab, a habit — keeps working. The conversation to
- * resume is dropped on the way across: it was held under the old persona, and
- * Emrys should start his first conversation as himself. Everything he was told
- * to remember comes with him.
+ * ~/.emrys — a launchd plist's log path, an editor tab, a habit — keeps
+ * working. The conversation to resume is dropped on the way across: it was
+ * held under the old name, and Jett should start his first conversation as
+ * himself. Everything he was told to remember comes with him.
  *
  * Safe to call from more than one place (the service installer runs it before
- * launchd opens log files under the new path). Returns true if it moved.
+ * launchd opens log files under the new path). Returns the folder it moved,
+ * or false.
  */
 export function migrateHome() {
   if (HOME !== DEFAULT_HOME || existsSync(DEFAULT_HOME)) return false
-  let legacy
+  const from = LEGACY_HOMES.find((dir) => {
+    try {
+      const st = lstatSync(dir)
+      return st.isDirectory() && !st.isSymbolicLink()
+    } catch {
+      return false
+    }
+  })
+  if (!from) return false
+  renameSync(from, DEFAULT_HOME)
   try {
-    legacy = lstatSync(LEGACY_HOME)
-  } catch {
-    return false
-  }
-  if (!legacy.isDirectory() || legacy.isSymbolicLink()) return false
-  renameSync(LEGACY_HOME, DEFAULT_HOME)
-  try {
-    symlinkSync(DEFAULT_HOME, LEGACY_HOME)
+    symlinkSync(DEFAULT_HOME, from)
   } catch {
     /* the link is a convenience */
   }
@@ -100,7 +107,7 @@ export function migrateHome() {
   } catch {
     /* no state yet */
   }
-  return true
+  return from
 }
 
 /**
@@ -112,7 +119,8 @@ export function migrateHome() {
  */
 export function ensureHome() {
   const created = []
-  if (migrateHome()) created.push(`moved ${LEGACY_HOME} here`)
+  const moved = migrateHome()
+  if (moved) created.push(`moved ${moved} here`)
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const from = join(dir, entry.name)
@@ -235,6 +243,30 @@ export function updateState(change) {
   writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n')
   renameSync(tmp, PATHS.state)
   return state
+}
+
+/**
+ * settings.json — the few choices that are yours rather than the machine's.
+ *
+ *   address     what he calls you ("sir", "boss", your name). Empty: nothing.
+ *   localModel  which Ollama model is his local brain. Empty: the best one installed.
+ *   buildModel  which model writes workshop builds. Empty: the default.
+ *
+ * Read fresh each time it matters, so an edit takes effect without a restart.
+ * A file that is missing or broken is the same as an empty one.
+ */
+export function readSettings() {
+  try {
+    const raw = JSON.parse(readFileSync(PATHS.settings, 'utf8'))
+    const word = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '')
+    return {
+      address: word(raw.address, 40).replace(/[^\p{L}\p{N} .'’-]/gu, ''),
+      localModel: word(raw.localModel, 80),
+      buildModel: word(raw.buildModel, 80),
+    }
+  } catch {
+    return { address: '', localModel: '', buildModel: '' }
+  }
 }
 
 /** One line in today's journal. The bridge writes these, not the model. */
@@ -379,6 +411,17 @@ export function takeBriefings(which = 'unread') {
  * from a stranger has no business sitting in a system prompt. He reads it
  * through a tool when you ask, where it arrives as data.
  */
+/** The little the local brain is given about them: who they are, and what to remember. */
+export function localContext() {
+  const bare = (text) => text.replace(/<!--[\s\S]*?-->\s*/g, '').replace(/^# .*\n+/, '').trim()
+  const about = readText(PATHS.aboutMe, 1500)
+  const facts = readText(PATHS.facts, 2500, 'tail')
+  return {
+    about: about && !isUnfilled(about) ? bare(about) : '',
+    facts: facts && !isUnfilled(facts) ? bare(facts) : '',
+  }
+}
+
 export function contextBlock() {
   const parts = []
   // The templates explain themselves in HTML comments; the model needs none of it.

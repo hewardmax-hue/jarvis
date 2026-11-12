@@ -4,7 +4,7 @@ import { useStore, phaseColor, type Phase } from '../store'
 import { PUSH_TO_TALK } from '../config'
 
 /**
- * Emrys, present.
+ * Jett, present.
  *
  * A small orb at the foot of the map: it breathes at rest, follows your voice
  * while you talk and his while he answers, and changes colour with what he is
@@ -18,7 +18,7 @@ import { PUSH_TO_TALK } from '../config'
 const STATUS: Record<Phase, string> = {
   offline: 'Offline',
   boot: 'Connecting',
-  dormant: PUSH_TO_TALK ? 'Hold ⌥ to talk, or type' : 'Say “Emrys”, or type',
+  dormant: PUSH_TO_TALK ? 'Hold ⌥ to talk, or type' : 'Say “Jett”, or type',
   waking: 'Yes?',
   listening: 'Listening',
   thinking: 'Thinking',
@@ -101,8 +101,8 @@ export function Presence() {
       ? activeTool.replace(/[_-]/g, ' ')
       : phase === 'dormant' && helper
         ? 'Hold ⌥ in any app to talk, or type'
-        : phase === 'dormant' && helperMissing.includes('accessibility')
-          ? 'Hold ⌥ here to talk — for any app, allow Emrys Helper in Accessibility'
+        : phase === 'dormant' && (helperMissing.includes('microphone') || helperMissing.includes('speech'))
+          ? 'Hold ⌥ here to talk — for any app, allow Jett the microphone'
           : STATUS[phase]
 
   return (

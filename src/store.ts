@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ApprovalRequest, Notice, RecallHit } from './lib/bridge'
+import type { ApprovalRequest, Notice, RecallHit, Shelf, Step } from './lib/bridge'
 import type { BrainItem, Graph } from './lib/memory'
 
 export type Phase =
@@ -15,7 +15,7 @@ export type Phase =
 export type Tier = 'fast' | 'voice' | 'deep'
 
 /**
- * A card Emrys composed. Rendered on a blade now — panels and blades used to be
+ * A card Jett composed. Rendered on a blade now — panels and blades used to be
  * two surfaces, and two places to look is one too many.
  */
 export type Panel = {
@@ -48,7 +48,7 @@ export type Blade = {
 
 export type Turn = {
   id: string
-  role: 'user' | 'emrys'
+  role: 'user' | 'jett'
   text: string
   /** Tools used while producing this turn, for the activity line. */
   tools?: string[]
@@ -60,10 +60,25 @@ export type Turn = {
 /** Items lit up on the map, and why. A new `at` re-runs the flight. */
 export type Lit = { ids: string[]; mode: 'recall' | 'search' | 'open' | 'new'; at: number }
 
-const TRANSCRIPT_KEY = 'emrys.transcript'
-const PREFS_KEY = 'emrys.prefs'
+const TRANSCRIPT_KEY = 'jett.transcript'
+const PREFS_KEY = 'jett.prefs'
 
 type Prefs = { muted: boolean; voice: string; accent: string | null }
+
+/**
+ * He was called Emrys before he was Jett. What this browser kept under the old
+ * name — the transcript, the settings, the map's layout — comes across once.
+ */
+try {
+  for (const key of ['transcript', 'prefs', 'voice', 'layout.v1']) {
+    const old = localStorage.getItem(`emrys.${key}`)
+    if (old === null) continue
+    if (localStorage.getItem(`jett.${key}`) === null) localStorage.setItem(`jett.${key}`, old)
+    localStorage.removeItem(`emrys.${key}`)
+  }
+} catch {
+  /* private window */
+}
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -77,7 +92,9 @@ function load<T>(key: string, fallback: T): T {
 function loadTurns(): Turn[] {
   try {
     const raw = JSON.parse(localStorage.getItem(TRANSCRIPT_KEY) ?? '[]')
-    return Array.isArray(raw) ? raw.slice(-80) : []
+    if (!Array.isArray(raw)) return []
+    // Turns saved before the rename carry his old name as their role.
+    return raw.slice(-80).map((t) => (t.role === 'user' ? t : { ...t, role: 'jett' }))
   } catch {
     return []
   }
@@ -105,9 +122,48 @@ function savePrefs(p: Prefs) {
 
 const prefs = load<Prefs>(PREFS_KEY, { muted: false, voice: '', accent: null })
 
+/**
+ * `?mute=1` opens him silent — for a quiet room, or a second window that should
+ * not talk over the first. It is read here and nowhere else: everything that
+ * makes a sound asks the store whether he is muted, so one flag covers every
+ * voice he has. Not saved; the next ordinary launch speaks again.
+ */
+const mutedByUrl = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get('mute') === '1'
+  } catch {
+    return false
+  }
+})()
+
+let badgeTimer = 0
+
+/** One piece of the build on the bench, as the checklist shows it. */
+export type BenchPart = {
+  name: string
+  /** A few words on what it is. */
+  label: string
+  state: 'writing' | 'running' | 'ok' | 'failed' | 'repairing'
+}
+
+/** The build on the workshop bench. The 3D itself lives in the sealed stage; this is what is drawn around it. */
+export type Bench = {
+  id: string
+  title: string
+  request: string
+  status: 'building' | 'changing' | 'ready' | 'error'
+  parts: BenchPart[]
+  exploded: boolean
+  light: 'studio' | 'day' | 'sunset' | 'night'
+  /** One line under the title: what is happening, or what was just done. */
+  note: string
+  /** When the work now under way began; 0 while the bench is at rest. */
+  since: number
+}
+
 type State = {
   phase: Phase
-  /** 0..1 loudness — the user's mic while listening, Emrys's voice while speaking. */
+  /** 0..1 loudness — the user's mic while listening, Jett's voice while speaking. */
   level: number
   /** Live transcript of what the user is saying. */
   caption: string
@@ -118,13 +174,13 @@ type State = {
   /** The voice speaking, for the settings readout. */
   voice: string
   gestures: boolean
-  /** Set while Emrys is looking through the camera or at the screen. */
+  /** Set while Jett is looking through the camera or at the screen. */
   looking: string | null
   /** True while the user is sharing their screen with him. */
   sharing: boolean
-  /** True while the menu-bar helper can hear ⌥ and listen: ⌥ then works from any app. */
+  /** True while the Mac app can hear ⌥ and listen: ⌥ then works from any app. */
   helper: boolean
-  /** What the running helper is still waiting for, e.g. ['accessibility']. Empty when ready or absent. */
+  /** What the Mac app is still waiting for, e.g. ['microphone']. Empty when ready or absent. */
   helperMissing: string[]
   panels: Panel[]
   blades: Blade[]
@@ -132,6 +188,12 @@ type State = {
   expandedBlade: string | null
   approval: ApprovalRequest | null
   notices: Notice[]
+  /** What he and his agents are doing, oldest first — the core's activity list. */
+  steps: Step[]
+  /** Which side of the right-hand column is showing: what was said, or the work. */
+  side: 'talk' | 'activity'
+  /** What is on the workshop bench, if anything. It takes the centre of the screen while it is. */
+  bench: Bench | null
 
   // The second brain.
   graph: Graph | null
@@ -143,12 +205,24 @@ type State = {
 
   // Settings.
   tier: Tier
+  /** Which brain is answering: Claude, or a model on this Mac. */
+  shelf: Shelf
+  /** The BRAIN / VOICE badge, shown for a few seconds after a switch. */
+  badge: boolean
   muted: boolean
   voiceId: string
   accent: string | null
 
   setApproval: (a: ApprovalRequest | null) => void
   setNotices: (n: Notice[]) => void
+  setSteps: (steps: Step[]) => void
+  setSide: (side: 'talk' | 'activity') => void
+  putStep: (step: Step) => void
+  setBench: (bench: Bench | null) => void
+  /** These three do nothing unless `id` is the build that is on the bench now. */
+  patchBench: (id: string, patch: Partial<Bench>) => void
+  putBenchPart: (id: string, part: BenchPart) => void
+  dropBenchPart: (id: string, name: string) => void
   setVoice: (v: string) => void
   setGestures: (on: boolean) => void
   setLooking: (why: string | null) => void
@@ -180,6 +254,8 @@ type State = {
   setHovered: (id: string | null) => void
 
   setTier: (t: Tier) => void
+  setShelf: (s: Shelf) => void
+  flashBadge: () => void
   setMuted: (m: boolean) => void
   setVoiceId: (v: string) => void
   setAccent: (a: string | null) => void
@@ -206,6 +282,9 @@ export const useStore = create<State>((set, get) => ({
   expandedBlade: null,
   approval: null,
   notices: [],
+  steps: [],
+  side: 'talk',
+  bench: null,
 
   graph: null,
   graphVersion: 0,
@@ -215,12 +294,41 @@ export const useStore = create<State>((set, get) => ({
   hovered: null,
 
   tier: 'voice',
-  muted: prefs.muted,
+  shelf: { mode: 'cloud', model: null },
+  badge: false,
+  muted: mutedByUrl || prefs.muted,
   voiceId: prefs.voice,
   accent: prefs.accent,
 
   setApproval: (approval) => set({ approval }),
   setNotices: (notices) => set({ notices }),
+  setSteps: (steps) => set({ steps: steps.slice(-400) }),
+  setSide: (side) => set({ side }),
+  // A step arrives when it starts and again when it changes; the newest are at
+  // the end, so that is where to look for the one being changed.
+  putStep: (step) =>
+    set((s) => {
+      for (let i = s.steps.length - 1; i >= 0 && i >= s.steps.length - 400; i--) {
+        if (s.steps[i].id !== step.id) continue
+        const steps = s.steps.slice()
+        steps[i] = step
+        return { steps }
+      }
+      return { steps: [...s.steps.slice(-399), step] }
+    }),
+  setBench: (bench) => set({ bench }),
+  patchBench: (id, patch) => set((s) => (s.bench?.id === id ? { bench: { ...s.bench, ...patch } } : {})),
+  putBenchPart: (id, part) =>
+    set((s) => {
+      if (s.bench?.id !== id) return {}
+      const at = s.bench.parts.findIndex((p) => p.name === part.name)
+      const parts = s.bench.parts.slice()
+      if (at < 0) parts.push(part)
+      else parts[at] = part
+      return { bench: { ...s.bench, parts } }
+    }),
+  dropBenchPart: (id, name) =>
+    set((s) => (s.bench?.id === id ? { bench: { ...s.bench, parts: s.bench.parts.filter((p) => p.name !== name) } } : {})),
   setVoice: (voice) => set({ voice }),
   setGestures: (gestures) => set({ gestures }),
   setLooking: (looking) => set({ looking }),
@@ -278,7 +386,7 @@ export const useStore = create<State>((set, get) => ({
     set((s) => {
       const turns = [...s.turns]
       const last = turns[turns.length - 1]
-      if (!last || last.role !== 'emrys') return {}
+      if (!last || last.role !== 'jett') return {}
       turns[turns.length - 1] = { ...last, text: last.text + text }
       saveTurns(turns)
       return { turns }
@@ -309,6 +417,12 @@ export const useStore = create<State>((set, get) => ({
   setHovered: (hovered) => set({ hovered }),
 
   setTier: (tier) => set({ tier }),
+  setShelf: (shelf) => set({ shelf }),
+  flashBadge: () => {
+    set({ badge: true })
+    window.clearTimeout(badgeTimer)
+    badgeTimer = window.setTimeout(() => set({ badge: false }), 5000)
+  },
   setMuted: (muted) => {
     set({ muted })
     savePrefs({ muted, voice: get().voiceId, accent: get().accent })
@@ -346,7 +460,7 @@ export const phaseColor: Record<Phase, string> = {
 }
 
 if (import.meta.env.DEV) {
-  ;(window as unknown as Record<string, unknown>).__emrys = new Proxy(
+  ;(window as unknown as Record<string, unknown>).__jett = new Proxy(
     {} as Record<string, unknown>,
     {
       get: (_t, key) => (useStore.getState() as Record<string | symbol, unknown>)[key],

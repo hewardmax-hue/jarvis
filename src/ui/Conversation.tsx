@@ -4,15 +4,20 @@ import { useStore } from '../store'
 import { decide } from '../lib/approval'
 import { KINDS } from '../lib/memory'
 import { PUSH_TO_TALK } from '../config'
+import { Activity, NowStrip, useWork } from './Activity'
 
 /**
  * The conversation, in writing.
  *
- * Everything said both ways, kept across reloads, with what Emrys drew on shown
+ * Everything said both ways, kept across reloads, with what Jett drew on shown
  * under each answer — the notes he recalled as chips you can click to see on
  * the map, and the tools he used as a quiet line. At the foot, a box to type
  * in: on a call, or anywhere speaking is wrong, typing is the same
  * conversation.
+ *
+ * The other tab is the work behind it (Activity.tsx): what he and his agents
+ * are doing, step by step. The box stays at the foot of both, so whatever is
+ * running can be told something new without leaving the view of it.
  */
 
 const SUGGESTIONS = [
@@ -31,7 +36,7 @@ function greeting() {
   return h < 5 ? 'Up late.' : h < 12 ? 'Good morning.' : h < 18 ? 'Good afternoon.' : 'Good evening.'
 }
 
-/** "emrys_brain · search_brain" -> "Searched your notes". Unknown ones keep their own name. */
+/** "jett_brain · search_brain" -> "Searched your notes". Unknown ones keep their own name. */
 function toolLabel(raw: string): string {
   const t = raw.toLowerCase()
   if (t.includes('search_brain') || t.includes('open_note')) return 'Checked your notes'
@@ -96,11 +101,13 @@ function Approval() {
 
 export function Conversation({
   onSend,
+  onStop,
   onHold,
   draft,
   setDraft,
 }: {
   onSend: (text: string) => void
+  onStop: () => void
   onHold: (down: boolean) => void
   draft: string
   setDraft: (s: string) => void
@@ -110,16 +117,29 @@ export function Conversation({
   const select = useStore((s) => s.select)
   const clearTranscript = useStore((s) => s.clearTranscript)
   const error = useStore((s) => s.error)
+  const side = useStore((s) => s.side)
+  const setSide = useStore((s) => s.setSide)
+  const { work } = useWork()
   const scroller = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLTextAreaElement>(null)
+  // Whether the view is resting on the latest line. Read from where the user left the scroll, never
+  // from the gap after new lines land: an answer that arrives with its sources can add more height
+  // in one go than any "near enough" allowance, and the view would stop following for good.
+  const pinned = useRef(true)
+
+  // Coming back to the conversation lands on its latest line.
+  useEffect(() => {
+    const el = scroller.current
+    if (!el || side !== 'talk') return
+    pinned.current = true
+    el.scrollTop = el.scrollHeight
+  }, [side])
 
   // Follow the conversation down, unless the user has scrolled up to read.
   useEffect(() => {
     const el = scroller.current
-    if (!el) return
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 160
-    if (near) el.scrollTop = el.scrollHeight
-  }, [turns])
+    if (el && pinned.current) el.scrollTop = el.scrollHeight
+  }, [turns, phase])
 
   useEffect(() => {
     const focus = (e: KeyboardEvent) => {
@@ -144,19 +164,43 @@ export function Conversation({
   return (
     <aside className="convo">
       <div className="convo-head">
-        <span>Conversation</span>
-        {turns.length > 0 && (
-          <button className="convo-clear" onClick={clearTranscript} title="Clear the conversation shown here (Emrys still remembers it)">
+        <div className="convo-tabs" role="tablist">
+          <button role="tab" aria-selected={side === 'talk'} className={side === 'talk' ? 'is-on' : ''} onClick={() => setSide('talk')}>
+            Conversation
+          </button>
+          <button
+            role="tab"
+            aria-selected={side === 'activity'}
+            className={side === 'activity' ? 'is-on' : ''}
+            onClick={() => setSide('activity')}
+            title="What Jett and his agents are doing, step by step"
+          >
+            Activity
+            {work.length > 0 && <span className="convo-live">{work.length}</span>}
+          </button>
+        </div>
+        {side === 'talk' && turns.length > 0 && (
+          <button className="convo-clear" onClick={clearTranscript} title="Clear the conversation shown here (Jett still remembers it)">
             Clear
           </button>
         )}
       </div>
 
-      <div className="convo-scroll" ref={scroller}>
+      {side === 'activity' ? (
+        <Activity onStop={onStop} />
+      ) : (
+      <div
+        className="convo-scroll"
+        ref={scroller}
+        onScroll={(e) => {
+          const el = e.currentTarget
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+        }}
+      >
         {turns.length === 0 ? (
           <div className="convo-empty">
             <div className="convo-hello">{greeting()}</div>
-            <p>{PUSH_TO_TALK ? 'Hold ⌥ Option and talk, or type below.' : 'Say “Emrys”, or type below.'}</p>
+            <p>{PUSH_TO_TALK ? 'Hold ⌥ Option and talk, or type below.' : 'Say “Jett”, or type below.'}</p>
             <div className="convo-suggest">
               {SUGGESTIONS.map((s) => (
                 <button key={s} onClick={() => onSend(s)}>
@@ -168,9 +212,9 @@ export function Conversation({
         ) : (
           turns.map((t) => (
             <div key={t.id} className={`msg msg-${t.role}`}>
-              {t.role === 'emrys' && <span className="msg-who">Emrys</span>}
+              {t.role === 'jett' && <span className="msg-who">Jett</span>}
               <div className="msg-text">{t.text || (busy ? '…' : '')}</div>
-              {t.role === 'emrys' && (t.sources?.length || t.tools?.length) ? (
+              {t.role === 'jett' && (t.sources?.length || t.tools?.length) ? (
                 <div className="msg-meta">
                   {t.sources?.map((s) => (
                     <button key={s.id} className="msg-source" onClick={() => select(s.id)} title={`${s.hub ?? ''}`}>
@@ -187,8 +231,8 @@ export function Conversation({
           ))
         )}
         {busy && turns.at(-1)?.role === 'user' && (
-          <div className="msg msg-emrys msg-pending">
-            <span className="msg-who">Emrys</span>
+          <div className="msg msg-jett msg-pending">
+            <span className="msg-who">Jett</span>
             <div className="typing">
               <i />
               <i />
@@ -197,7 +241,9 @@ export function Conversation({
           </div>
         )}
       </div>
+      )}
 
+      {side === 'talk' && <NowStrip onOpen={() => setSide('activity')} onStop={onStop} />}
       <Approval />
       {error && <div className="convo-error">{error}</div>}
 
@@ -230,7 +276,7 @@ export function Conversation({
         <textarea
           ref={input}
           rows={1}
-          placeholder="Message Emrys"
+          placeholder={work.length ? 'Tell him something new — it redirects him' : 'Message Jett'}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {

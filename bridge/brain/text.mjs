@@ -23,7 +23,7 @@ const STOP = new Set(
   what what's when when's where where's which while who who's whom why why's with won't
   would wouldn't you you'd you'll you're you've your yours yourself yourselves
   also just like get got please tell show give find pull up open look know want need make
-  hey emrys jarvis okay ok yeah yes thanks thank really could would something anything
+  hey jett jet emrys jarvis okay ok yeah yes thanks thank really could would something anything
   me mine us ya gonna wanna let lets right now doing going fine good great well sure think
   thing things stuff bit lot much many maybe actually kind sort mean said say says go
   hello hi morning evening afternoon night today tonight tomorrow yesterday

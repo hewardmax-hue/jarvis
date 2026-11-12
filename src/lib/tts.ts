@@ -13,14 +13,14 @@ import { useStore } from '../store'
 /**
  * Speech output.
  *
- * Emrys's own voice comes from the core: a neural model running on this Mac
+ * Jett's own voice comes from the core: a neural model running on this Mac
  * (see bridge/voice.mjs) that generates a sentence in a few hundred
  * milliseconds and sounds like a person. ElevenLabs is used instead when a key
  * is configured, and the browser's speechSynthesis is the fallback for when
  * neither is available — instant, but robotic.
  *
  * Either way, text is cut at sentence boundaries as it streams in and spoken a
- * sentence at a time, so Emrys starts talking while Claude is still writing.
+ * sentence at a time, so Jett starts talking while Claude is still writing.
  *
  * The queue is an explicit array with a single pump rather than a promise
  * chain. A chain cannot be cut: cancelling mid-sentence left the chain's tail
@@ -159,11 +159,22 @@ const ABBREVIATION =
  */
 const MAX_UNSPOKEN = 220
 
+/**
+ * Short sentences waiting to be spoken are made as one piece of audio, up to
+ * about this many characters. A voice model reads "Done. It went at nine. Want
+ * the reply?" far better in one breath than as three clips with a seam between
+ * each — and it is one generation instead of three.
+ */
+const PACK_CHARS = 170
+
+/** How long a waiting sentence is held for company before its audio is made. */
+const PACK_WAIT_MS = 160
+
 // ---------------------------------------------------------------------------
 // Voice selection
 // ---------------------------------------------------------------------------
 
-const VOICE_PREF_KEY = 'emrys.voice'
+const VOICE_PREF_KEY = 'jett.voice'
 
 /**
  * Rank installed voices by how close they are to the character: a British
@@ -312,7 +323,7 @@ function outputContext(): AudioContext | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Nudge the delivery toward Emrys's cadence.
+ * Nudge the delivery toward Jett's cadence.
  *
  * speechSynthesis ignores SSML, so punctuation is the only prosody control
  * available — the engine pauses on commas and full stops. Making sure the
@@ -345,16 +356,17 @@ type Item = {
   text: string
   /** Generation starts one sentence ahead, not all at once. */
   audio?: Promise<string | null> | null
+  /** Said on its own, never joined to what follows — a filler, a receipt. */
+  solo?: boolean
 }
 
 export function createSpeaker(): Speaker {
   const queue: Item[] = []
   let buffer = ''
   let cancelled = false
-  /** Whether anything of this answer has been queued yet. */
-  let opened = false
   let outLevel = 0
   let pumping = false
+  let packTimer = 0
 
   let currentAudio: HTMLAudioElement | null = null
   let nativeInFlight = false
@@ -375,16 +387,32 @@ export function createSpeaker(): Speaker {
     const text = shape(sentence)
     if (!text) return
 
-    const item: Item = { text }
     if (priority) {
       // Genuinely ahead of the queue this time. The old `say()` appended to the
       // same chain and only appeared to preempt because it was called when the
       // queue happened to be empty.
-      queue.unshift(item)
+      queue.unshift({ text, solo: true })
+      void pump()
+      return
+    }
+
+    // A sentence whose audio has not been started can still take the next one.
+    const last = queue[queue.length - 1]
+    if (last && !last.solo && last.audio === undefined && last.text.length + text.length < PACK_CHARS) {
+      last.text = `${last.text} ${text}`
     } else {
-      queue.push(item)
+      queue.push({ text })
     }
     void pump()
+
+    // Whatever is next is made while the current sentence plays, so there is
+    // no gap between them — after a beat, in case more arrives to go with it.
+    // (When nothing is playing, pump() above has already taken it.)
+    window.clearTimeout(packTimer)
+    const next = queue[0]
+    if (!next) return
+    if (next.text.length >= PACK_CHARS - 40) prime(next)
+    else packTimer = window.setTimeout(() => !cancelled && prime(queue[0]), PACK_WAIT_MS)
   }
 
   /** null means "no audio pipeline, use the system voice directly". */
@@ -467,7 +495,7 @@ export function createSpeaker(): Speaker {
         nativeBroken = true
         diag.nativeBroken = true
         diag.engine = 'elevenlabs'
-        console.warn('[emrys] system voice is not producing sound — using the bridge speech proxy from here on')
+        console.warn('[jett] system voice is not producing sound — using the bridge speech proxy from here on')
       }
       const rescue =
         (caps().local ? await fetchLocalAudio(item.text).catch(() => null) : null) ??
@@ -568,7 +596,7 @@ export function createSpeaker(): Speaker {
         // barge-in. Everything else means the engine could not speak.
         if (code !== 'interrupted' && code !== 'canceled') {
           diag.failures++
-          console.error(`[emrys] speech failed (${code}) on voice "${u.voice?.name ?? 'default'}"`)
+          console.error(`[jett] speech failed (${code}) on voice "${u.voice?.name ?? 'default'}"`)
         }
         finish()
       }
@@ -579,7 +607,7 @@ export function createSpeaker(): Speaker {
       // silent sentence is recoverable and a stuck queue is not.
       watchdog = setTimeout(() => {
         if (done || started) return
-        console.warn('[emrys] speech did not start — un-wedging the engine')
+        console.warn('[jett] speech did not start — un-wedging the engine')
         speechSynthesis.cancel()
         speechSynthesis.resume()
         try {
@@ -590,7 +618,7 @@ export function createSpeaker(): Speaker {
         }
         watchdog = setTimeout(() => {
           if (done || started) return
-          console.error('[emrys] speech engine is not responding — switching to the cloud voice')
+          console.error('[jett] speech engine is not responding — switching to the cloud voice')
           diag.failures++
           diag.lastError = diag.lastError || 'no-start'
           finish()
@@ -677,7 +705,7 @@ export function createSpeaker(): Speaker {
         diag.failures++
         diag.lastError = String((err as Error)?.name ?? 'play-rejected')
         if ((err as Error)?.name === 'NotAllowedError') {
-          window.dispatchEvent(new Event('emrys-autoplay-blocked'))
+          window.dispatchEvent(new Event('jett-autoplay-blocked'))
         }
         finish()
       })
@@ -691,18 +719,10 @@ export function createSpeaker(): Speaker {
       if (cancelled) return
       buffer += delta
 
-      // The first words matter most. A long opening sentence is cut at its
-      // first clause so the voice can start on that while the rest is made —
-      // "Right, so the invoice went out on Friday," plays while the second
-      // half is still being generated.
-      if (!opened && buffer.length > 60) {
-        const m = /^(.{18,70}?[,;:—–])\s/.exec(buffer)
-        if (m) {
-          opened = true
-          enqueue(m[1])
-          buffer = buffer.slice(m[0].length)
-        }
-      }
+      // A sentence is never cut to start sooner. Splitting the opening at its
+      // first comma did buy a few hundred milliseconds, and paid for them with
+      // a seam in the middle of the first thing he says — two clips, two
+      // intonations, a hitch between. Fluency first: whole sentences only.
 
       // Drain every complete sentence sitting in the buffer.
       for (;;) {
@@ -723,7 +743,6 @@ export function createSpeaker(): Speaker {
           continue
         }
         enqueue(candidate)
-        opened = true
         buffer = buffer.slice(cut)
       }
 
@@ -744,11 +763,15 @@ export function createSpeaker(): Speaker {
       }
       if (cancelled) return
       if (!pumping && !queue.length) return
+      // Nothing more is coming to join what is waiting: make it now.
+      window.clearTimeout(packTimer)
+      prime(queue[0])
       await new Promise<void>((resolve) => drained.push(resolve))
     },
     cancel() {
       if (cancelled) return
       cancelled = true
+      window.clearTimeout(packTimer)
       buffer = ''
       queue.length = 0
       // Keep the echo tail: the words already in the air still have to be

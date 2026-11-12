@@ -104,7 +104,7 @@ export async function rescan() {
 
 /** What each kind of item is called, and the colour it wears on the map. */
 export const KINDS: Record<NodeKind, { label: string; color: string }> = {
-  core: { label: 'Emrys', color: '#f4f1ea' },
+  core: { label: 'Jett', color: '#f4f1ea' },
   hub: { label: 'Folder', color: '#c9d2e3' },
   entity: { label: 'Person or thing', color: '#f2a7c3' },
   fact: { label: 'Memory', color: '#b49cff' },

@@ -12,9 +12,9 @@
  * The voice session reaches the deep tier through the `deep-work` subagent
  * below; scheduled jobs name their tier in schedules.json.
  *
- * Every tier can be overridden from the environment: EMRYS_MODEL and
- * EMRYS_EFFORT for the conversation, EMRYS_MODEL_DEEP / _FAST and their
- * _EFFORT partners for the others. The old JARVIS_* names still work.
+ * Every tier can be overridden from the environment: JETT_MODEL and
+ * JETT_EFFORT for the conversation, JETT_MODEL_DEEP / _FAST and their
+ * _EFFORT partners for the others. The old EMRYS_* and JARVIS_* names still work.
  *
  * Effort for the conversation is 'low'. Measured on this machine, time to the
  * first spoken word is dominated by the request itself, not the model's
@@ -26,7 +26,7 @@
  */
 
 const env = process.env
-const pick = (name) => env[`EMRYS_${name}`] ?? env[`JARVIS_${name}`]
+const pick = (name) => env[`JETT_${name}`]
 
 export const TIERS = {
   fast: {
@@ -67,7 +67,7 @@ export const AGENTS = {
       'Give it the whole request and what the user wants back. It returns a ' +
       'written result; you summarise it aloud and put the detail on a blade.',
     prompt:
-      'You are the deep-work half of Emrys, a personal assistant. The voice ' +
+      'You are the deep-work half of Jett, a personal assistant. The voice ' +
       'half has handed you a request that needs care. Do the work thoroughly ' +
       'with the tools you have, then return a clear written result: the answer ' +
       'first, then the supporting detail, then sources as short names. Write ' +

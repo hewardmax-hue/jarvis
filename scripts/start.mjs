@@ -1,15 +1,16 @@
 /**
- * One command to run Emrys: the bridge (brain) and the Vite dev server (face)
+ * One command to run Jett: the bridge (brain) and the Vite dev server (face)
  * together, so a student types `npm start` and nothing else.
  *
  * Two long-running processes normally mean two terminals. This launcher spawns
  * both as children, tags their output so you can tell them apart, and shuts
  * them down together on Ctrl-C — no extra dependency, just Node.
  *
- * Pass --writes to allow Emrys to take real actions (drive the phone, the
+ * Pass --writes to allow Jett to take real actions (drive the phone, the
  * browser, send things): `npm start -- --writes`.
  */
 
+import '../bridge/env.mjs'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
@@ -105,9 +106,9 @@ process.on('SIGTERM', () => shutdown(0))
  * without widening what the bridge trusts by default.
  */
 const port = process.env.PORT
-const bridgeEnv = writes ? { EMRYS_ALLOW_WRITES: '1' } : {}
+const bridgeEnv = writes ? { JETT_ALLOW_WRITES: '1' } : {}
 if (port) {
-  bridgeEnv.EMRYS_ALLOWED_ORIGINS = `http://localhost:${port},http://127.0.0.1:${port}`
+  bridgeEnv.JETT_ALLOWED_ORIGINS = `http://localhost:${port},http://127.0.0.1:${port}`
   console.log(`  serving the face on port ${port}; the bridge will accept it.\n`)
 }
 
@@ -119,7 +120,7 @@ vendorWasm()
  * port, so in that case this launcher brings up the face alone.
  */
 async function coreRunning() {
-  const bridgePort = process.env.EMRYS_PORT ?? process.env.Emrys_BRIDGE_PORT ?? '8787'
+  const bridgePort = process.env.JETT_PORT ?? process.env.JETT_BRIDGE_PORT ?? '8787'
   try {
     const res = await fetch(`http://localhost:${bridgePort}/health`, {
       signal: AbortSignal.timeout(800),

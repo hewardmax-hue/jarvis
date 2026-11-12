@@ -12,7 +12,7 @@ import { BRIDGE_WS_URL } from '../config'
  * The bridge holds one Claude Agent SDK query per connection, and keeps its
  * session id on disk so a reconnect within a few hours picks the same
  * conversation back up. Past that window a reconnect starts fresh, and the
- * transcript on screen no longer matches what Emrys remembers — which is why
+ * transcript on screen no longer matches what Jett remembers — which is why
  * the reconnect below is loud rather than invisible: `watchConnection` says
  * which of the two happened.
  */
@@ -46,12 +46,57 @@ type Frame = {
   hits?: RecallHit[]
   ids?: string[]
   tier?: string
+  /** The local model's name, on a `brain_state` frame. */
+  model?: string | null
   version?: number
   brain?: number
   connected?: boolean
   down?: boolean
   cancelled?: boolean
   final?: boolean
+  event?: Step
+  events?: Step[]
+}
+
+/**
+ * One step on the activity list: a question being worked on, a tool call with
+ * what it was given and what came back, an agent handed a piece of work, a
+ * scheduled job. A step that takes time arrives once as `running` and again,
+ * under the same id, when it ends.
+ */
+export type Step = {
+  id: string
+  at: number
+  kind: 'turn' | 'tool' | 'agent' | 'job' | 'recall' | 'brain' | 'build' | 'note'
+  /** Who is doing it: Jett, an agent by its role, or a job by its title. */
+  agent: string
+  title: string
+  detail?: string
+  input?: string
+  result?: string
+  /** What an agent is saying right now, while it works. */
+  note?: string
+  status: 'running' | 'waiting' | 'done' | 'error' | 'denied' | 'stopped'
+  ms?: number
+  /** The step this one was taken for. */
+  parent?: string
+  tool?: string
+  /** A job's name, so it can be stopped. */
+  job?: string
+  cost?: number
+}
+
+/** `whole` is the list so far, sent on connect; otherwise one step, new or changed. */
+let onActivity: ((steps: Step[], whole: boolean) => void) | null = null
+export function watchActivity(fn: (steps: Step[], whole: boolean) => void) {
+  onActivity = fn
+}
+
+/** Stop a scheduled job that is running. */
+export function stopJob(name: string) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'stop_job', name }))
+  }
 }
 
 /**
@@ -82,14 +127,19 @@ export type RecallHit = { id: string; title: string; kind: string; hub?: string;
  *
  *   version — the map changed; fetch it again
  *   recall  — these items were looked up for the question just asked
- *   focus   — Emrys searched, opened or wrote these; fly to them
+ *   focus   — Jett searched, opened or wrote these; fly to them
  *   tier    — the conversation moved to another model
+ *   shelf   — which brain is answering: Claude, or a model on this Mac
  */
 export type BrainEvent =
   | { type: 'version'; version: number }
   | { type: 'recall'; ask?: string; hits: RecallHit[] }
   | { type: 'focus'; ids: string[]; mode: 'search' | 'open' | 'new' }
   | { type: 'tier'; tier: string }
+  | { type: 'shelf'; shelf: Shelf }
+
+/** Which brain is on the shelf. `model` is the local model's name, when local. */
+export type Shelf = { mode: 'cloud' | 'local'; model: string | null }
 
 let onBrain: ((e: BrainEvent) => void) | null = null
 export function watchBrain(fn: (e: BrainEvent) => void) {
@@ -117,6 +167,98 @@ export type Notice = { id: string; title: string; headline?: string; at: string 
 
 /** Every question gets an id so its answer can be told from anyone else's. */
 let askSeq = 0
+
+/**
+ * Things the bridge does without a model, and answers for.
+ *
+ * A brain switch and an instant note are requests with one reply each, matched
+ * by id. Each settles exactly once — with the bridge's answer, or with `lost`
+ * if it never comes — so a caller can always say what happened.
+ */
+const requests = new Map<string, (msg: any) => void>()
+
+async function request<T>(frame: Record<string, unknown>, lost: T, ms = 6000): Promise<T> {
+  let ws: WebSocket
+  try {
+    ws = await connect()
+  } catch {
+    return lost
+  }
+  const id = `r${++askSeq}-${Date.now().toString(36)}`
+  return new Promise<T>((resolve) => {
+    const timer = window.setTimeout(() => {
+      requests.delete(id)
+      resolve(lost)
+    }, ms)
+    requests.set(id, (msg) => {
+      window.clearTimeout(timer)
+      requests.delete(id)
+      resolve(msg as T)
+    })
+    ws.send(JSON.stringify({ ...frame, id }))
+  })
+}
+
+export type BrainSwitch = { ok: boolean; say: string; mode: 'cloud' | 'local'; model: string | null }
+
+/** "Go local", "go cloud", or just asking which one is on. */
+export function switchBrain(want: 'local' | 'cloud' | 'status', said: string): Promise<BrainSwitch> {
+  return request<BrainSwitch>(
+    { type: 'brain', want, said },
+    { ok: false, say: "I can't reach my core to do that just now.", mode: 'cloud', model: null },
+  )
+}
+
+export type Captured =
+  | { ok: true; kind: 'fact' | 'note'; title: string; node: string | null }
+  | { ok: false; kind: 'fact' | 'note'; error: string }
+
+/** Write a fact or a note down now, without a model. Always answers. */
+export function capture(kind: 'fact' | 'note', text: string, said: string): Promise<Captured> {
+  return request<Captured>({ type: 'capture', kind, text, said }, { ok: false, kind, error: 'the core did not answer' })
+}
+
+/**
+ * The workshop. Frames about the build on the bench arrive unasked — a part to
+ * run, a line to say — and carry the build's own id, so a late one from a build
+ * that has since been cleared can be told apart and dropped.
+ */
+export type BenchFrame = { type: 'workshop'; id: string; op: string; [key: string]: unknown }
+
+let onBench: ((frame: BenchFrame) => void) | null = null
+export function watchBench(fn: (frame: BenchFrame) => void) {
+  onBench = fn
+}
+
+/** Tell the bench something that wants no answer: start a build, or how a part ran. */
+export function sendBench(frame: Record<string, unknown>) {
+  void connect().then(
+    (ws) => ws.send(JSON.stringify({ ...frame, type: 'workshop' })),
+    () => {},
+  )
+}
+
+/**
+ * What a sentence said over an open build turned out to be. The core has
+ * already acted on it by the time this arrives; `line` is what to say, and
+ * `other` means it was never about the build at all.
+ */
+export type Sorted = { kind: 'change' | 'talk' | 'new' | 'other'; line: string; what: string }
+
+/** Longer than the core's own limit on sorting, so its answer always wins the race. */
+const SORT_WAIT_MS = 9000
+
+export function tellBench(said: string): Promise<Sorted> {
+  return request<Sorted>({ type: 'workshop', op: 'tell', said }, { kind: 'other', line: '', what: '' }, SORT_WAIT_MS)
+}
+
+/** `lost` is set when the core never answered, which is not the same as it saying no. */
+export type BenchAnswer = { ok: boolean; title?: string; lost?: boolean }
+
+/** Bring back what is on the bench, or the last thing built, or clear it. */
+export function askBench(op: 'state' | 'last' | 'close'): Promise<BenchAnswer> {
+  return request<BenchAnswer>({ type: 'workshop', op }, { ok: false, lost: true })
+}
 
 let socket: WebSocket | null = null
 let connecting: Promise<WebSocket> | null = null
@@ -171,7 +313,7 @@ export function watchBlades(fn: (blade: Blade) => void) {
 }
 
 /** Commands that redress the interface — theme, reactor, orbits, effects. Same
- *  out-of-band route as panels: Emrys issues them while he is still mid-answer
+ *  out-of-band route as panels: Jett issues them while he is still mid-answer
  *  so the change is on screen as he says it, which means they cannot ride back
  *  on the turn's result. The op/args pair stays untyped here on purpose — this
  *  module is a transport, and the store is where the shape is decided. */
@@ -327,8 +469,24 @@ function dispatch(ws: WebSocket) {
       onBrain?.({ type: 'focus', ids: msg.ids, mode })
     } else if (msg.type === 'tier' && msg.tier) {
       onBrain?.({ type: 'tier', tier: msg.tier })
+    } else if (msg.type === 'brain_state') {
+      onBrain?.({
+        type: 'shelf',
+        shelf: { mode: msg.mode === 'local' ? 'local' : 'cloud', model: typeof msg.model === 'string' ? msg.model : null },
+      })
+      if (typeof msg.id === 'string') requests.get(msg.id)?.(msg)
+    } else if (msg.type === 'captured' && typeof msg.id === 'string') {
+      requests.get(msg.id)?.(msg)
     } else if (msg.type === 'notices') {
       onNotices?.(Array.isArray(msg.items) ? msg.items : [])
+    } else if (msg.type === 'workshop' && typeof msg.id === 'string' && typeof msg.op === 'string') {
+      onBench?.(msg as unknown as BenchFrame)
+    } else if (msg.type === 'workshop_reply' && typeof msg.id === 'string') {
+      requests.get(msg.id)?.(msg)
+    } else if (msg.type === 'activity' && msg.event?.id) {
+      onActivity?.([msg.event], false)
+    } else if (msg.type === 'activity_log' && Array.isArray(msg.events)) {
+      onActivity?.(msg.events, true)
     } else if (msg.type === 'panel' && msg.panel) {
       onPanel?.(msg.panel)
     } else if (msg.type === 'blade' && msg.blade) {
@@ -364,6 +522,22 @@ function dispatch(ws: WebSocket) {
   })
 }
 
+/**
+ * A tab opened by `npm run preflight` says so in its address (`?check=1`), and
+ * says so to the core in turn: such a window never takes over the remembered
+ * conversation, and nothing typed into it reaches the conversation log.
+ */
+function socketUrl(): string {
+  try {
+    if (new URLSearchParams(window.location.search).get('check') !== '1') return BRIDGE_WS_URL
+    const url = new URL(BRIDGE_WS_URL)
+    url.searchParams.set('check', '1')
+    return url.toString()
+  } catch {
+    return BRIDGE_WS_URL
+  }
+}
+
 function connect(): Promise<WebSocket> {
   if (socket?.readyState === WebSocket.OPEN) return Promise.resolve(socket)
   if (connecting) return connecting
@@ -371,7 +545,7 @@ function connect(): Promise<WebSocket> {
   firstReady = deferred()
 
   connecting = new Promise<WebSocket>((resolve, reject) => {
-    const ws = new WebSocket(BRIDGE_WS_URL)
+    const ws = new WebSocket(socketUrl())
     let settled = false
 
     /**
@@ -391,7 +565,7 @@ function connect(): Promise<WebSocket> {
 
     const timer = setTimeout(() => {
       ws.close()
-      settle(new Error('Emrys’s core is not responding — check it with `npm run service:status`.'))
+      settle(new Error('Jett’s core is not responding — check it with `npm run service:status`.'))
     }, 6000)
 
     ws.onopen = () => {
@@ -419,7 +593,7 @@ function connect(): Promise<WebSocket> {
        */
       settle(
         new Error(
-          `Cannot reach Emrys’s core at ${BRIDGE_WS_URL}. Either it is not ` +
+          `Cannot reach Jett’s core at ${BRIDGE_WS_URL}. Either it is not ` +
             'running (`npm run service:install` starts it for good), or this page is on a port it ' +
             `refuses — it accepts localhost:5173-5199 and 4173-4199, and this ` +
             `page is on ${location.port || '80'}.`,
@@ -441,7 +615,7 @@ function connect(): Promise<WebSocket> {
   return connecting
 }
 
-/** Open the socket early so the first "Emrys" isn't waiting on a handshake. */
+/** Open the socket early so the first "Jett" isn't waiting on a handshake. */
 export async function warmBridge(): Promise<void> {
   await connect()
   // Don't block startup if the bridge never announces — the dispatcher fills
@@ -477,7 +651,7 @@ export async function ask(
    * Two concurrent turns genuinely would corrupt each other — both listeners
    * see every delta, and the first 'done' resolves both with the other's text —
    * but refusing the new one was the wrong way to prevent that. It surfaced as
-   * "Emrys is already answering", which is a sentence about this module's
+   * "Jett is already answering", which is a sentence about this module's
    * bookkeeping rather than about anything the user did, and it contradicts the
    * premise the whole app is built on: say something and it becomes the turn.
    *
@@ -611,7 +785,7 @@ export async function ask(
       fail(new Error('The connection dropped mid-answer. Reconnecting.'))
     }
     const onError = () => {
-      fail(new Error('The connection to Emrys’s core failed.'))
+      fail(new Error('The connection to Jett’s core failed.'))
     }
 
     pending = { finish }
@@ -630,7 +804,7 @@ export async function ask(
 }
 
 /**
- * Cut Emrys off mid-answer.
+ * Cut Jett off mid-answer.
  *
  * Tells the bridge to stop, then settles the in-flight turn here rather than
  * waiting for a 'done' that a barge-in may never produce. Whatever he had
@@ -653,6 +827,6 @@ export function interrupt(): void {
 function prettyToolName(raw: string): string {
   if (!raw.startsWith('mcp__')) return raw
   const [, server, ...rest] = raw.split('__')
-  const where = server.replace(/^emrys_?/, '').replace(/^claude_ai_/, '').replace(/_/g, ' ')
-  return `${where || 'emrys'} · ${rest.join(' ').replace(/_/g, ' ')}`
+  const where = server.replace(/^jett_?/, '').replace(/^claude_ai_/, '').replace(/_/g, ' ')
+  return `${where || 'jett'} · ${rest.join(' ').replace(/_/g, ' ')}`
 }

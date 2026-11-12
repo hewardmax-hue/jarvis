@@ -14,7 +14,7 @@ import {
 /**
  * The memory panel — the second brain in words, beside the map.
  *
- * At rest it shows what Emrys knows: the facts he has been told, where his
+ * At rest it shows what Jett knows: the facts he has been told, where his
  * material comes from and how far the indexing has got. Search it and the
  * results replace that. Pick anything — here, on the map, or from a source chip
  * in the conversation — and its summary, key facts and connections take over
@@ -71,7 +71,7 @@ function Detail({ onAsk }: { onAsk: (text: string) => void }) {
       <section className="mem-detail">
         <button className="mem-back" onClick={() => select(null)}>← Back</button>
         <div className="mem-kind">
-          <KindDot kind={node?.kind ?? 'hub'} /> {node?.kind === 'entity' ? 'Person, place or project' : node?.kind === 'core' ? 'Emrys' : 'Folder'}
+          <KindDot kind={node?.kind ?? 'hub'} /> {node?.kind === 'entity' ? 'Person, place or project' : node?.kind === 'core' ? 'Jett' : 'Folder'}
         </div>
         <h2 className="mem-title">{node?.label ?? '…'}</h2>
         {failed && <p className="mem-dim">Could not load this item.</p>}
@@ -92,7 +92,7 @@ function Detail({ onAsk }: { onAsk: (text: string) => void }) {
         )}
         {node && node.kind === 'entity' && (
           <button className="mem-ask" onClick={() => onAsk(`What do you know about ${node.label}?`)}>
-            Ask Emrys about {node.label}
+            Ask Jett about {node.label}
           </button>
         )}
       </section>
@@ -141,7 +141,7 @@ function Detail({ onAsk }: { onAsk: (text: string) => void }) {
           </>
         )}
         <button className="mem-ask" onClick={() => onAsk(`Tell me about “${item.title}”.`)}>
-          Ask Emrys
+          Ask Jett
         </button>
       </div>
       {item.neighbours.filter((n) => n.kind !== 'core').length > 0 && (
@@ -210,7 +210,7 @@ function Overview() {
   return (
     <>
       <section className="mem-section">
-        <div className="mem-h">What Emrys knows about you</div>
+        <div className="mem-h">What Jett knows about you</div>
         {facts.length === 0 && <p className="mem-dim">Nothing yet. Tell him something and say “remember that”.</p>}
         <ul className="mem-list">
           {facts.map((f) => (

@@ -2,7 +2,7 @@
  * Where everything sits on the map.
  *
  * A force layout in three dimensions — links pull, nodes push apart, and the
- * folders settle into constellations around Emrys at the centre. It runs here,
+ * folders settle into constellations around Jett at the centre. It runs here,
  * off the main thread, because a few hundred ticks over a few hundred nodes is
  * long enough to drop frames, and dropped frames are exactly what this
  * interface is not allowed to have.
@@ -25,7 +25,7 @@ self.onmessage = (e: MessageEvent<In>) => {
   const sim: SimNode[] = nodes.map((n) => ({ ...n }))
   const warm = sim.filter((n) => n.x !== undefined).length / Math.max(1, sim.length)
 
-  // Emrys is the fixed centre everything orbits.
+  // Jett is the fixed centre everything orbits.
   const core = sim.find((n) => n.kind === 'core')
   if (core) {
     core.fx = 0

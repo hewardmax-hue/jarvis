@@ -1,11 +1,11 @@
 /**
- * Sharing the screen with Emrys.
+ * Sharing the screen with Jett.
  *
  * The browser only allows a screen capture to start from a click — it cannot
  * be opened by a tool call on its own — so the user starts sharing with the
  * Share button and the stream stays open until they stop it, either here or
  * from the browser's own "Stop sharing" bar. While it is open, `look_at_screen`
- * takes a frame from it; when it is not, the tool says so and Emrys asks.
+ * takes a frame from it; when it is not, the tool says so and Jett asks.
  */
 
 let stream: MediaStream | null = null

@@ -27,15 +27,42 @@ export function TopBar({ onBrief }: { onBrief: () => void }) {
   const setError = useStore((s) => s.setError)
   // Re-rendered when the voice engine comes up, which is when the list exists.
   const voiceName = useStore((s) => s.voice)
+  const shelf = useStore((s) => s.shelf)
+  const badge = useStore((s) => s.badge)
   const voices = caps().voices
   const latest = notices.at(-1)
+  const local = shelf.mode === 'local'
+  const brainLabel = local ? `Local · ${shelf.model ?? 'on this Mac'}` : `Claude · ${TIERS.find((t) => t.id === tier)?.label ?? ''}`
+  const voiceLabel = muted
+    ? 'Off'
+    : (voices.find((v) => v.id === (voiceId || caps().defaultVoice))?.label ?? (voiceName || 'System'))
 
   return (
     <header className="topbar">
       <div className="brand">
         <span className={`brand-dot brand-dot-${phase}`} />
-        <span className="brand-name">Emrys</span>
+        <span className="brand-name">Jett</span>
       </div>
+
+      {/* Which brain and which voice: for five seconds after a switch, and for
+          as long as he is on the local brain — that one has no tools, and it
+          should never be a surprise. */}
+      {(badge || local) && (
+        <div
+          className={`shelf${local ? ' is-local' : ''}`}
+          role="status"
+          title={local ? 'On the local brain: private and offline, with no tools. Say “go cloud” to switch back.' : undefined}
+        >
+          <span className="shelf-key">Brain</span>
+          <span className="shelf-val">{brainLabel}</span>
+          {badge && (
+            <>
+              <span className="shelf-key">Voice</span>
+              <span className="shelf-val">{voiceLabel}</span>
+            </>
+          )}
+        </div>
+      )}
 
       {latest && (
         <button className="notice" onClick={onBrief} title={latest.headline}>
@@ -45,7 +72,7 @@ export function TopBar({ onBrief }: { onBrief: () => void }) {
       )}
 
       <div className="topbar-right">
-        <div className="seg" role="radiogroup" aria-label="Model">
+        <div className={`seg${local ? ' is-idle' : ''}`} role="radiogroup" aria-label="Model" title={local ? 'These are Claude’s modes. He is on the local brain.' : undefined}>
           {TIERS.map((t) => (
             <button
               key={t.id}
@@ -65,7 +92,7 @@ export function TopBar({ onBrief }: { onBrief: () => void }) {
             className="voice-select"
             value={voiceId || caps().defaultVoice}
             onChange={(e) => setVoiceId(e.target.value)}
-            title={`Emrys’s voice${voiceName ? ` — ${voiceName}` : ''}`}
+            title={`Jett’s voice${voiceName ? ` — ${voiceName}` : ''}`}
           >
             {voices.map((v) => (
               <option key={v.id} value={v.id}>
@@ -101,7 +128,7 @@ export function TopBar({ onBrief }: { onBrief: () => void }) {
                 if (err?.name !== 'NotAllowedError') setError(`Screen sharing failed: ${err?.message ?? err}`)
               })
           }}
-          title={sharing ? 'Stop sharing your screen' : 'Let Emrys see your screen'}
+          title={sharing ? 'Stop sharing your screen' : 'Let Jett see your screen'}
         >
           {sharing ? 'Sharing screen' : 'Share screen'}
         </button>

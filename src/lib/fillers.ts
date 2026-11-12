@@ -2,7 +2,7 @@
  * Filler speech.
  *
  * A tool call can take ten seconds, and silence that long reads as a crash. So
- * Emrys says something short the instant work starts — then goes quiet until
+ * Jett says something short the instant work starts — then goes quiet until
  * he has an answer. One line, no progress chatter.
  *
  * The same goes for a slow start: when the first word of an answer is late, a
@@ -73,11 +73,11 @@ const FOOTAGE = ['Putting the video together.', 'Rendering.']
 
 const BY_TOOL: Rule[] = [
   // His own memory and second brain: fast, and better named than hidden.
-  { server: /^brain$|emrys_brain/, tool: /search_brain|open_note/, lines: ['Let me check my notes.', 'Looking through your notes.', 'Checking.'] },
-  { server: /^brain$|emrys_brain/, tool: /remember|write_note|forget/, lines: ['Noting that.', 'Got it.'] },
-  { server: /^eyes$|emrys_eyes/, tool: /screen/, lines: ['Looking at your screen.', 'Let me see.'] },
-  { server: /^eyes$|emrys_eyes/, lines: ['Let me look.', 'Taking a look.'] },
-  { server: /^mac$|emrys_mac/, lines: ['On it.', 'Doing that now.'] },
+  { server: /^brain$|jett_brain/, tool: /search_brain|open_note/, lines: ['Let me check my notes.', 'Looking through your notes.', 'Checking.'] },
+  { server: /^brain$|jett_brain/, tool: /remember|write_note|forget/, lines: ['Noting that.', 'Got it.'] },
+  { server: /^eyes$|jett_eyes/, tool: /screen/, lines: ['Looking at your screen.', 'Let me see.'] },
+  { server: /^eyes$|jett_eyes/, lines: ['Let me look.', 'Taking a look.'] },
+  { server: /^mac$|jett_mac/, lines: ['On it.', 'Doing that now.'] },
   { tool: /^websearch$|^webfetch$|web search|web fetch/, lines: ['Searching.', 'Looking it up.'] },
   { tool: /^grep$|^glob$|^read$/, lines: ['Looking through your files.', 'Checking your files.'] },
   // Video sits above image because higgsfield and palmier both do either, so

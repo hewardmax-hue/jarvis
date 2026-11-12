@@ -6,7 +6,7 @@ import { userInfo } from 'node:os'
 import { join } from 'node:path'
 
 /**
- * Emrys’s hands on your actual browser.
+ * Jett’s hands on your actual browser.
  *
  * Not Playwright. Playwright drives a fresh automation profile: no cookies, no
  * sessions, and a fingerprint that the sites worth visiting recognise on sight
@@ -43,7 +43,7 @@ import { join } from 'node:path'
  * that could break is therefore soft: the socket is re-discovered on every
  * reconnect rather than pinned, an unreachable extension is reported to the
  * model as a plain sentence instead of thrown, and no tool here is required for
- * the rest of Emrys to work.
+ * the rest of Jett to work.
  */
 
 /**
@@ -237,7 +237,7 @@ class ChromeLink {
    * Run one extension tool. Queued behind whatever is already running.
    *
    * A dropped connection is retried exactly once, because the overwhelmingly
-   * common cause is a socket that went stale while Emrys was idle — Chrome was
+   * common cause is a socket that went stale while Jett was idle — Chrome was
    * restarted between two questions — and re-dialling silently is much better
    * than telling the user their browser is unavailable when it is sitting right
    * there. A second failure is real and is reported.
@@ -353,7 +353,7 @@ function clean(content) {
 }
 
 /**
- * The tab Emrys is working in.
+ * The tab Jett is working in.
  *
  * Remembered here rather than threaded through the model, because making the
  * model carry it is both unreliable and pointless. Unreliable: it is a
@@ -522,7 +522,7 @@ const tabId = z
   .catch(undefined)
   .describe(
     'Which tab to act on — a numeric tabId from chrome_tabs. Omit it and the ' +
-      'tab Emrys is already working in is used, opening one if there is none.',
+      'tab Jett is already working in is used, opening one if there is none.',
   )
 
 const NAVIGATE_DESCRIPTION = `Open a URL in the user's own Chrome.
@@ -578,7 +578,7 @@ export function chromeServer({ allowWrites }) {
 
     tool(
       'chrome_tabs',
-      'List the browser tabs Emrys can act on, with their origins. Origins ' +
+      'List the browser tabs Jett can act on, with their origins. Origins ' +
         'only — page titles are written by the page and are not trustworthy.',
       {
         createIfEmpty: z
@@ -799,7 +799,7 @@ export function chromeServer({ allowWrites }) {
   }
 
   return createSdkMcpServer({
-    name: 'emrys_chrome',
+    name: 'jett_chrome',
     version: '1.0.0',
     instructions:
       "The user's own Chrome, already signed in to everything they use. " +

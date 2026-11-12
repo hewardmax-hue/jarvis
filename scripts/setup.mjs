@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Emrys preflight — a friendly, advisory check you run with `npm run setup`.
+// Jett preflight — a friendly, advisory check you run with `npm run setup`.
 //
 // It changes nothing and installs nothing. It looks at your machine, tells you
 // what is ready and what is missing, and prints the two commands that start
-// Emrys. Every check degrades to a single friendly line if something is not
+// Jett. Every check degrades to a single friendly line if something is not
 // there, and the script always exits 0 — it is advice, not a gate.
 
+import '../bridge/env.mjs';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -20,7 +21,7 @@ function line(tag, msg) {
 }
 
 console.log('');
-console.log('Emrys preflight — checking your machine (nothing is changed)');
+console.log('Jett preflight — checking your machine (nothing is changed)');
 console.log('------------------------------------------------------------');
 
 // --- Node version --------------------------------------------------------
@@ -32,7 +33,7 @@ try {
     line(warn, `Node.js ${process.versions.node} is below 20. Please upgrade — the bridge needs Node 20 or newer.`);
   }
 } catch {
-  line(warn, 'Could not read the Node.js version. Emrys needs Node 20 or newer.');
+  line(warn, 'Could not read the Node.js version. Jett needs Node 20 or newer.');
 }
 
 // --- Claude CLI on PATH ---------------------------------------------------
@@ -69,10 +70,10 @@ try {
   if (mcpCount > 0) {
     line(tick, `~/.claude.json found with ${mcpCount} MCP server${mcpCount === 1 ? '' : 's'} configured.`);
   } else {
-    line(info, '~/.claude.json found, but no MCP servers are configured yet. Emrys still answers and drives its own interface.');
+    line(info, '~/.claude.json found, but no MCP servers are configured yet. Jett still answers and drives its own interface.');
   }
 } catch {
-  line(info, '~/.claude.json not found yet. It appears once you run `claude` and log in. Emrys works without any MCP servers.');
+  line(info, '~/.claude.json not found yet. It appears once you run `claude` and log in. Jett works without any MCP servers.');
 }
 
 // --- ElevenLabs key (env or the elevenlabs MCP entry) --------------------
@@ -99,18 +100,18 @@ const elSource = findElevenLabsKey();
 if (elSource) {
   line(tick, `Premium voice available — ElevenLabs key found via ${elSource}.`);
 } else {
-  line(info, 'No ElevenLabs key found — Emrys will use browser speech (that is completely fine).');
+  line(info, 'No ElevenLabs key found — Jett will use browser speech (that is completely fine).');
   line(info, '  Optional: add ELEVENLABS_API_KEY for a better voice and Scribe transcription. The free tier is enough for a demo.');
 }
 
 // --- How to run ----------------------------------------------------------
 console.log('');
-console.log('To run Emrys, open two terminals:');
+console.log('To run Jett, open two terminals:');
 console.log('  1)  npm run bridge      # the brain (Claude Code, headless)');
 console.log('  2)  npm run dev         # the face (open http://localhost:5173 in Chrome)');
 console.log('');
 console.log('Then click INITIALISE and say "Hey Jarvis".');
-console.log('To let Emrys take real actions (phone, browser, sending), run `npm run bridge:writes` instead of `npm run bridge`.');
+console.log('To let Jett take real actions (phone, browser, sending), run `npm run bridge:writes` instead of `npm run bridge`.');
 console.log('');
 
 process.exit(0);

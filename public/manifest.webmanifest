@@ -1,7 +1,7 @@
 {
-  "id": "/emrys",
-  "name": "Emrys",
-  "short_name": "Emrys",
+  "id": "/jett",
+  "name": "Jett",
+  "short_name": "Jett",
   "description": "Your personal AI assistant, with a second brain.",
   "start_url": "/",
   "scope": "/",
@@ -10,25 +10,25 @@
   "theme_color": "#0a0c11",
   "icons": [
     {
-      "src": "/emrys-192.png",
+      "src": "/jett-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/emrys-512.png",
+      "src": "/jett-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/emrys-maskable-512.png",
+      "src": "/jett-maskable-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/emrys-icon.svg",
+      "src": "/jett-icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"

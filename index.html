@@ -14,7 +14,7 @@
       address to a host of the page author's choosing, and it needs no script to
       fire.
 
-      Emrys now shows images and video he found on the web, and `img-src` and
+      Jett now shows images and video he found on the web, and `img-src` and
       `media-src` stay closed anyway — that is the entire point of the design.
       The sanitiser rewrites every remote URL to a bridge endpoint, and the
       bridge fetches it server-side and streams it back, so the browser only
@@ -38,6 +38,14 @@
       have been through the bridge — script-stripped, served under their own
       tight CSP, and sandboxed at the iframe — can be framed at all.
 
+      'self' is for the workshop: the stage that runs model-written 3D code is
+      served from this address at /workshop/stage.html. It is the only frame
+      this origin serves, and its own response header sandboxes it, so it has
+      no origin, no network and no way to reach this page except postMessage.
+      `*.localhost:8787` is the same core under a spare name: a stage that
+      replaces a frozen one is loaded from there, so the browser starts it in
+      a process of its own instead of the one that hung.
+
       The rest is loose on purpose, because the voice stack needs it:
       'wasm-unsafe-eval' and 'unsafe-eval' for the ONNX runtime and the inline
       espeak-ng WASM, blob: workers for the wake-word engine and the speech
@@ -51,7 +59,7 @@
         default-src 'self';
         base-uri 'self';
         object-src 'none';
-        frame-src https://www.youtube-nocookie.com https://www.youtube.com https://player.vimeo.com http://localhost:8787 http://127.0.0.1:8787;
+        frame-src 'self' https://www.youtube-nocookie.com https://www.youtube.com https://player.vimeo.com http://localhost:8787 http://127.0.0.1:8787 http://*.localhost:8787;
         img-src 'self' data: blob: http://localhost:8787 http://127.0.0.1:8787;
         script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:;
         style-src 'self' 'unsafe-inline';
@@ -62,19 +70,19 @@
       "
     />
 
-    <title>Emrys</title>
+    <title>Jett</title>
 
     <!--
-      What makes it installable as an app: Chrome offers "Install Emrys"
+      What makes it installable as an app: Chrome offers "Install Jett"
       for a page with a manifest like this one, and the result opens in its own
       window with its own icon in the Dock. Install it from the always-on
       interface at localhost:4180, which the core serves whether or not a
       terminal is open, rather than from the dev server.
     -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" href="/emrys-icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/jett-icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-title" content="Emrys" />
+    <meta name="apple-mobile-web-app-title" content="Jett" />
   </head>
   <body>
     <div id="root"></div>

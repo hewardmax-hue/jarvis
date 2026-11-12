@@ -1,4 +1,4 @@
-# Emrys
+# Jett
 
 A personal AI assistant for the Mac that you talk to like a person, with a
 **second brain**: everything you have told him, everything the two of you have
@@ -56,8 +56,8 @@ npm run service:install
 ```
 
 That builds the interface and starts the core as a login service. Open
-**http://localhost:4180** in Chrome and choose **Install Emrys** from the
-address bar. From then on Emrys is an app with its own icon and window.
+**http://localhost:4180** in Chrome and choose **Install Jett** from the
+address bar. From then on Jett is an app with its own icon and window.
 
 `npm run service:install` is also how you update: it rebuilds and restarts.
 `npm run service:status` says what is running, how much of the second brain is
@@ -73,7 +73,7 @@ loaded, he speaks with the Mac's built-in voice.
 
 | Left | Middle | Right |
 |---|---|---|
-| **Memory** — search, what Emrys knows about you, your sources and how far indexing has got, and the full detail of whatever you pick | **The map** of your second brain, with Emrys at the centre and at the foot of the screen; anything he shows you opens on a card over it | **The conversation** — everything said both ways, the notes each answer drew on as chips you can click, the tools he used, approval cards, and the box to type in |
+| **Memory** — search, what Jett knows about you, your sources and how far indexing has got, and the full detail of whatever you pick | **The map** of your second brain, with Jett at the centre and at the foot of the screen; anything he shows you opens on a card over it | **The conversation** — everything said both ways, the notes each answer drew on as chips you can click, the tools he used, approval cards, and the box to type in |
 
 The top bar holds the model switch, the voice picker, mute (text replies only),
 and **Share screen**.
@@ -82,7 +82,7 @@ and **Share screen**.
 
 ## The second brain
 
-Everything lives in `~/.emrys`, as plain files you can open and edit:
+Everything lives in `~/.jett`, as plain files you can open and edit:
 
 | | |
 |---|---|
@@ -97,7 +97,7 @@ Everything lives in `~/.emrys`, as plain files you can open and edit:
 How it works — the approach that holds up in daily use rather than the one that
 demos well:
 
-1. **Connectors.** Each source is rescanned every fifteen minutes and Emrys's
+1. **Connectors.** Each source is rescanned every fifteen minutes and Jett's
    own folders are watched; only what is new or changed is read. Text comes out
    of Markdown, Word, PDF, PowerPoint and Excel with tools macOS already ships.
    Code projects, hidden folders and anything in `exclude` are skipped.
@@ -111,7 +111,7 @@ demos well:
 5. **The map.** Items, the folders they live in, and the people and projects
    that connect them, laid out in 3D.
 
-Desktop and Documents are read by default. Edit `~/.emrys/brain/sources.json` to
+Desktop and Documents are read by default. Edit `~/.jett/brain/sources.json` to
 add folders (Downloads is there, switched off), exclude names, or set
 `"digest": false` to keep file contents on this Mac and index by words alone.
 Changes are picked up within a minute.
@@ -133,26 +133,35 @@ Changes are picked up within a minute.
 | **D** | diagnostics |
 
 Hands-free instead of push-to-talk: set `VITE_TALK=wake` in `.env.local` and
-reinstall; he then listens for "Emrys".
+reinstall; he then listens for "Jett".
 
-### Talk from any app — the menu-bar helper
+### The Mac app
 
-`npm run service:install` also builds **Emrys Helper**, a small menu-bar app in
-`~/Applications`. With it running, hold ⌥ Option in *any* app — your browser, a
-document, a call — and Emrys listens; let go and he answers, without switching
-windows. Holding ⌥ with another key (⌥→, ⌥E) is treated as a shortcut and
-ignored.
+`npm run service:install` also builds **Jett**, a small native app in
+`~/Applications`. It is his window — the conversation, the map, and a live view
+of what he and his agents are doing — plus a dot in the menu bar and the talk
+key:
 
+- **Hold ⌥ Option in any app** — your browser, a document, a call — and Jett
+  listens; let go and he answers, without switching windows. ⌥ with another key
+  (⌥→, ⌥E) or a click is treated as a shortcut and ignored. It needs no
+  Accessibility permission: the app only watches the modifier key itself.
 - It listens with Apple's speech recognition, on this Mac when your language
-  supports it, and only while ⌥ is held.
-- Its dot in the menu bar shows what Emrys is doing, and its menu opens Emrys,
-  turns the talk key off, or quits it.
-- First run: allow the microphone and speech recognition when macOS asks, then
-  choose **Allow the ⌥ key…** in its menu and switch it on under Accessibility.
-- The Emrys window still has to be open (it can be in the background) — that is
-  where the answer is spoken. Holding ⌥ with it closed opens it.
+  supports it, and only while ⌥ (or the on-screen talk button) is held.
+- The dot in the menu bar shows what he is doing; its menu opens the window,
+  turns the talk key off, or quits.
+- Closing the window does not quit him: he stays in the menu bar, ⌥ still
+  works, and the answer is still spoken.
+- First run: allow the microphone and speech recognition when macOS asks.
+  Rebuilding the app (after an update) makes macOS ask again.
 
-`npm run service:install -- --no-helper` skips it; uninstall removes it.
+`node scripts/app.mjs` builds and opens the app without touching what starts
+at login. `npm run service:install -- --no-app` skips it; uninstall removes it.
+
+If the window ever looks wrong, `~/.jett/logs/app.log` says what the app could
+and could not do, including errors from the page. `touch
+~/.jett/logs/snapshot.request` writes a picture of the window to
+`snapshot.png` beside it; `reload.request` reloads it.
 
 ---
 
@@ -164,10 +173,10 @@ AppleScript — **asks first**: he says what he's about to do, a card shows
 exactly what will run, and you say or click yes or no. Silence for ninety
 seconds counts as no.
 
-Set what runs, asks or is refused in `~/.emrys/policy.json`:
+Set what runs, asks or is refused in `~/.jett/policy.json`:
 
 ```json
-{ "default": "ask", "allow": ["mcp__emrys_chrome__chrome_scroll"], "ask": [], "deny": ["mcp__android__*"] }
+{ "default": "ask", "allow": ["mcp__jett_chrome__chrome_scroll"], "ask": [], "deny": ["mcp__android__*"] }
 ```
 
 `decideTool()` in `bridge/gate.mjs` decides what counts as a read.
@@ -190,29 +199,62 @@ What keeps a spoken turn fast:
 - The map is two draw calls with its glow in a shader, and nothing over it uses
   backdrop blur.
 
-`EMRYS_TRACE=1` logs where each turn's time goes.
+`JETT_TRACE=1` logs where each turn's time goes.
 
 ---
 
 ## Configuration
 
 Core settings are environment variables, passed through by
-`npm run service:install` (the old `JARVIS_*` names still work):
+`npm run service:install` (the earlier `EMRYS_*` and `JARVIS_*` names still work):
 
 | Variable | Default | |
 |---|---|---|
-| `EMRYS_MODEL` / `EMRYS_EFFORT` | `claude-sonnet-5-5` / `low` | the conversation |
-| `EMRYS_MODEL_DEEP` / `EMRYS_EFFORT_DEEP` | `claude-opus-5-5` / `high` | deep work and the morning brief |
-| `EMRYS_MODEL_FAST` | `claude-haiku-5-5` | Quick mode and digesting |
-| `EMRYS_VOICE` | `bm_george` | default natural voice |
-| `EMRYS_VOICE_ENGINE` | | `off` to use the Mac's own voice |
-| `EMRYS_ROTATE_TOKENS` | `60000` | when a conversation continues in a fresh session |
-| `EMRYS_RESUME_HOURS` | `6` | how long a conversation can be picked back up |
-| `EMRYS_HOME` | `~/.emrys` | where everything lives |
-| `EMRYS_TRACE` | | `1` to log turn timings |
+| `JETT_MODEL` / `JETT_EFFORT` | `claude-sonnet-5-5` / `low` | the conversation |
+| `JETT_MODEL_DEEP` / `JETT_EFFORT_DEEP` | `claude-opus-5-5` / `high` | deep work and the morning brief |
+| `JETT_MODEL_FAST` | `claude-haiku-5-5` | Quick mode and digesting |
+| `JETT_VOICE` | `bm_george` | default natural voice |
+| `JETT_VOICE_ENGINE` | | `off` to use the Mac's own voice |
+| `JETT_ROTATE_TOKENS` | `60000` | when a conversation continues in a fresh session |
+| `JETT_RESUME_HOURS` | `6` | how long a conversation can be picked back up |
+| `JETT_HOME` | `~/.jett` | where everything lives |
+| `JETT_TRACE` | | `1` to log turn timings |
 
 With an ElevenLabs key (`ELEVENLABS_API_KEY`, or in your elevenlabs MCP config)
 he speaks with ElevenLabs and transcribes with Scribe instead.
+
+---
+
+## Preflight
+
+```bash
+npm run preflight
+```
+
+One command that tries the running Jett for real and prints a tick, a cross or
+a warning for each thing it tried: the core and the app are up, the second
+brain loads, every model answers, the voice returns sound, a spoken sentence
+comes back through the ears as the same words, a note is written, found by a
+question and removed again, what is served matches what is on disk, settings
+and keys cannot be fetched from a browser, a window opened with `?mute=1`
+makes no sound, and the workshop stage cannot reach out of its frame.
+
+It ends with two lines, the time each part of a turn took and the count:
+
+```
+LATENCY BUDGET: hear 0.6 s, think 1.9 s, speak 0.4 s, total 2.9 s
+24 pass, 0 fail, 2 warn
+```
+
+It exits non-zero on any failure. A missing voice, missing ears or no local
+brain are warnings, because Jett still works without them. It asks its
+questions over a quiet line: nothing it says is added to your conversation, and
+it removes the note it wrote. A run takes about a minute and uses twenty to
+thirty cents' worth of Claude, which it reports.
+
+After changing the code, `npm run build` rebuilds the app and
+`npm run service:restart` puts the core on the new code; preflight says so when
+either is behind.
 
 ---
 

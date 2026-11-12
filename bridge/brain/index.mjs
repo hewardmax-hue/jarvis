@@ -1,7 +1,7 @@
 /**
  * The second brain.
  *
- * One searchable pile of everything that is yours — what Emrys was told to
+ * One searchable pile of everything that is yours — what Jett was told to
  * remember, what the two of you said, the briefings he wrote, your own notes,
  * and the documents in the folders you point him at — and a habit of looking
  * in it before answering.
@@ -11,7 +11,7 @@
  *
  *   Connectors   each source is scanned for what is new or changed since the
  *                last pass, and only that is read. Every item is stamped with
- *                its date. Sources are rescanned on a timer and the ones Emrys
+ *                its date. Sources are rescanned on a timer and the ones Jett
  *                writes to are watched, so the brain keeps itself current.
  *   Digest       every item is read once by the cheapest model and given a
  *                summary, the questions it answers, tags, entities and atoms
@@ -24,7 +24,7 @@
  *   Graph        items, the folders they live in and the people and projects
  *                they mention, drawn as a map the interface can fly around.
  *
- * Everything lives in ~/.emrys/brain as plain JSON. Deleting index.json makes
+ * Everything lives in ~/.jett/brain as plain JSON. Deleting index.json makes
  * the brain rebuild itself from the sources on the next start.
  */
 
@@ -52,7 +52,7 @@ const DIGEST_BATCH = 6
 
 const DEFAULT_SOURCES = {
   '//':
-    'What the second brain reads. Emrys\'s own memory, conversations, briefings and notes are ' +
+    'What the second brain reads. Jett\'s own memory, conversations, briefings and notes are ' +
     'always included; "folders" adds yours. Each folder is read for documents (Markdown, text, ' +
     'Word, PDF, PowerPoint, Excel; Pages and Keynote by name only), skipping code projects, ' +
     'hidden folders and anything matching "exclude". Every item is summarised once by Claude ' +
@@ -75,7 +75,7 @@ const expand = (p) => (p.startsWith('~') ? join(homedir(), p.slice(1)) : p)
 const sha = (s) => createHash('sha1').update(s).digest('hex')
 const idFor = (prefix, key) => `${prefix}:${sha(key).slice(0, 12)}`
 
-/** Built-in sources: Emrys’s own writing. Ordered as they appear in the map. */
+/** Built-in sources: Jett’s own writing. Ordered as they appear in the map. */
 const OWN = [
   { name: 'Memory', kind: 'memory' },
   { name: 'Conversations', kind: 'conversation', dir: () => PATHS.conversations },
@@ -436,7 +436,7 @@ export function createBrain({ log = console.log, model = 'claude-haiku-5-5' } = 
     void digestPending()
   }
 
-  /** Rescan just Emrys’s own writing — after he remembers something, say. */
+  /** Rescan just Jett’s own writing — after he remembers something, say. */
   async function scanOwn() {
     let dirty = await scanMemory()
     for (const own of OWN.filter((o) => o.dir)) {
@@ -478,7 +478,7 @@ export function createBrain({ log = console.log, model = 'claude-haiku-5-5' } = 
         const now = Date.now()
         const todo = [...records.values()]
           .filter((r) => needsDigest(r, now))
-          // Emrys’s own material first, then the newest documents.
+          // Jett’s own material first, then the newest documents.
           .sort((a, b) => (a.kind === 'file') - (b.kind === 'file') || b.mtime - a.mtime)
           .slice(0, DIGEST_BATCH)
         if (!todo.length) break
@@ -613,7 +613,7 @@ export function createBrain({ log = console.log, model = 'claude-haiku-5-5' } = 
       if (at.has(a) && at.has(b) && a !== b) links.push([at.get(a), at.get(b)])
     }
 
-    add({ id: 'core', label: 'Emrys', kind: 'core', group: 'core' })
+    add({ id: 'core', label: 'Jett', kind: 'core', group: 'core' })
 
     // Hubs: every source, and every folder that holds something.
     const hubs = new Set()
@@ -771,7 +771,7 @@ export function createBrain({ log = console.log, model = 'claude-haiku-5-5' } = 
     }
   }
 
-  /** A sentence for the system prompt: what the brain holds, so Emrys knows to use it. */
+  /** A sentence for the system prompt: what the brain holds, so Jett knows to use it. */
   function overview() {
     const counts = {}
     for (const r of records.values()) counts[r.hub?.split('/')[0] ?? 'Memory'] = (counts[r.hub?.split('/')[0] ?? 'Memory'] ?? 0) + 1

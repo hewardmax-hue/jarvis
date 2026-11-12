@@ -3,7 +3,7 @@
  *
  * This is the difference between an assistant and a chat window: at seven in
  * the morning the brief gets written whether or not the interface is open,
- * and it is waiting when you are. Each job is a procedure from ~/.emrys/sops
+ * and it is waiting when you are. Each job is a procedure from ~/.jett/sops
  * run headless through the Agent SDK, on the tier schedules.json names, with
  * the same context — who you are, the standing rules, what he remembers — as
  * the conversation has.
@@ -21,7 +21,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readlinkSync } from 'node:fs'
 import { basename } from 'node:path'
 import {
   PATHS,
@@ -37,10 +37,11 @@ import {
 import { MCP_SERVERS, verdict } from './gate.mjs'
 import { tier } from './models.mjs'
 import { chromeServer } from './chrome.mjs'
+import { follow } from './activity.mjs'
 
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 
-const JOB_PROMPT = `You are Emrys, a personal assistant, working in the background on
+const JOB_PROMPT = `You are Jett, a personal assistant, working in the background on
 a scheduled job. Nobody is watching. The user will read what you write later, on
 screen, or hear you summarise it when they next talk to you.
 
@@ -145,10 +146,16 @@ function nextRun(job, now = new Date()) {
  * timer or a voice request, and neither can do anything useful with an
  * exception.
  */
-export async function runJob(job, { reason = 'on request', log = console.log, onFinish } = {}) {
+export async function runJob(
+  job,
+  { reason = 'on request', log = console.log, onFinish, activity = null, onStart } = {},
+) {
   const sop = readSop(job.sop)
   const t = tier(job.tier)
   const started = Date.now()
+  // Its line on the activity list, so a job running at seven can be watched —
+  // and stopped — like anything else he does.
+  let step = null
 
   if (!sop) {
     const error = `no procedure named "${job.sop}" in ${PATHS.sops}`
@@ -160,7 +167,21 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
   journal(`${job.title} started (${reason}).`)
 
   const abort = new AbortController()
-  const timer = setTimeout(() => abort.abort(), job.timeoutMinutes * 60_000)
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    abort.abort()
+  }, job.timeoutMinutes * 60_000)
+  onStart?.(abort)
+  step =
+    activity?.put({
+      kind: 'job',
+      agent: job.title,
+      title: job.title,
+      detail: `Scheduled job · ${reason} · ${t.model}`,
+      status: 'running',
+      job: job.name,
+    }) ?? null
   const refused = []
   let result = null
   let cost = null
@@ -184,14 +205,15 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
         tools: ['Task', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'ToolSearch'],
         mcpServers: {
           ...MCP_SERVERS,
-          emrys_chrome: chromeServer({ allowWrites: false }),
+          jett_chrome: chromeServer({ allowWrites: false }),
         },
         maxTurns: job.maxTurns,
         permissionMode: 'default',
         abortController: abort,
-        canUseTool: async (name) => {
+        canUseTool: async (name, _input, options) => {
           if (verdict(name) === 'allow') return { behavior: 'allow' }
           refused.push(name)
+          activity?.update(options?.toolUseID, { status: 'denied' })
           return {
             behavior: 'deny',
             message:
@@ -202,6 +224,7 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
       },
     })
     for await (const msg of session) {
+      if (activity) follow(activity, msg, { root: step, agent: job.title })
       if (msg.type !== 'result') continue
       if (msg.subtype === 'success' && msg.result?.trim()) {
         result = msg.result
@@ -211,12 +234,13 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
       }
     }
   } catch (err) {
-    error = abort.signal.aborted
+    error = timedOut
       ? `timed out after ${job.timeoutMinutes} minutes`
       : String(err?.message ?? err)
   } finally {
     clearTimeout(timer)
   }
+  if (!result && timedOut) error = `timed out after ${job.timeoutMinutes} minutes`
 
   const took = Math.round((Date.now() - started) / 1000)
   if (refused.length) log(`[jobs] ${job.name} was refused: ${[...new Set(refused)].join(', ')}`)
@@ -225,13 +249,21 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
     const record = saveBriefing(job, result, { model: t.model })
     log(`[jobs] ${job.name} done in ${took}s${cost != null ? ` · $${cost.toFixed(3)}` : ''} → ${record.file}`)
     journal(`${job.title} finished in ${took}s → briefings/${basename(record.file)}.`)
-    notify('Emrys', `${job.title} ready`, record.headline)
+    notify('Jett', `${job.title} ready`, record.headline)
     return finish({ ok: true, record, cost, took })
+  }
+
+  // Stopped by hand, from the activity view. Not a failure, and not worth a
+  // notification to the person who just pressed the button.
+  if (abort.signal.aborted && !timedOut) {
+    log(`[jobs] ${job.name} stopped after ${took}s`)
+    journal(`${job.title} stopped.`)
+    return finish({ ok: false, error: 'stopped', stopped: true, took })
   }
 
   log(`[jobs] ${job.name} failed after ${took}s: ${error}`)
   journal(`${job.title} failed: ${error}.`)
-  notify('Emrys', `${job.title} failed`, String(error))
+  notify('Jett', `${job.title} failed`, String(error))
   return finish({ ok: false, error, took })
 
   function finish(outcome) {
@@ -245,6 +277,14 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
         ...(outcome.record ? { lastFile: outcome.record.file } : {}),
       }
     })
+    if (step) {
+      activity.settle(step, outcome.ok ? 'done' : 'stopped')
+      activity.update(step, {
+        status: outcome.ok ? 'done' : outcome.stopped ? 'stopped' : 'error',
+        result: outcome.ok ? (outcome.record?.headline ?? 'Filed under briefings.') : String(outcome.error),
+        cost: outcome.cost ?? undefined,
+      })
+    }
     onFinish?.(job, outcome)
     return outcome
   }
@@ -256,7 +296,7 @@ export async function runJob(job, { reason = 'on request', log = console.log, on
  * inside it, so nothing a job wrote can be read as AppleScript.
  */
 function notify(title, subtitle, body) {
-  if (process.platform !== 'darwin' || (process.env.EMRYS_NOTIFY ?? process.env.JARVIS_NOTIFY) === '0') return
+  if (process.platform !== 'darwin' || process.env.JETT_NOTIFY === '0') return
   execFile(
     'osascript',
     [
@@ -280,20 +320,44 @@ function notify(title, subtitle, body) {
  * slot is claimed in state before its job starts, so a crash mid-run is not
  * retried in a loop, and only one run of any job is ever in flight.
  */
-export function createScheduler({ log = console.log, onFinish } = {}) {
+export function createScheduler({ log = console.log, onFinish, activity = null } = {}) {
   const running = new Set()
+  const aborts = new Map()
   let timer = null
 
   const run = async (job, reason) => {
     running.add(job.name)
     try {
-      return await runJob(job, { reason, log, onFinish })
+      return await runJob(job, {
+        reason,
+        log,
+        onFinish,
+        activity,
+        onStart: (abort) => aborts.set(job.name, abort),
+      })
     } finally {
       running.delete(job.name)
+      aborts.delete(job.name)
     }
   }
 
+  // Node reads the time zone once, at launch, so a service that has been up since before a flight
+  // goes on running "08:00" at eight o'clock in the city it left. Ask the system each tick and adopt
+  // the zone it is in now.
+  const followTheClock = () => {
+    let zone = null
+    try {
+      zone = readlinkSync('/etc/localtime').split('/zoneinfo/')[1] ?? null
+    } catch {
+      return
+    }
+    if (!zone || zone === Intl.DateTimeFormat().resolvedOptions().timeZone) return
+    process.env.TZ = zone
+    log(`[jobs] this Mac is on ${zone} time now; schedules follow it`)
+  }
+
   const tick = () => {
+    followTheClock()
     const now = new Date()
     const records = readState().jobs ?? {}
     for (const job of readSchedules()) {
@@ -330,6 +394,13 @@ export function createScheduler({ log = console.log, onFinish } = {}) {
       if (running.has(name)) return { ok: false, error: `${job.title} is already running` }
       void run(job, 'on request')
       return { ok: true, job }
+    },
+    /** Stop a job that is running. True if there was one to stop. */
+    cancel(name) {
+      const abort = aborts.get(name)
+      if (!abort) return false
+      abort.abort()
+      return true
     },
     status() {
       const records = readState().jobs ?? {}
